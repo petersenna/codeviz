@@ -1,0 +1,999 @@
+#!/usr/bin/perl
+# This is a script for generating call graphs based on the full graph generated
+# by genfull . The parameters are fully described in the man page viewable
+# by running gengraph --man
+#
+# The graph is represented internally as a DAG where each node is a function
+# and each edge is a call. The fields in a dag node are
+#
+# label    - Label of the node to display. Used to hash into the graph
+# outbound - Number of nodes this connects to
+# inbound  - Number of nodes connecting to here
+# callers  - List of nodes that call the current code
+# callees  - List of nodes that the current node calls
+#
+# For running in daemon mode, a pipe is opened in $PIPE (/tmp/codeviz.pipe)
+# which clients write to. The parameters that normally exist on the command
+# line are passed in as one line where each paramater is seperated by the
+# delimiter #()# . Once a pipe has been written, select() will block as it
+# should. To address this, the daemon sleeps for 0.1 seconds for 1 second and
+# then sleeps for one second until a total of 3 seconds has expired. If no
+# input has arrived in that time, the pipe is reopened so that the process
+# will block.
+#
+# The main loop is in gengraph_main() which builds what information is needed
+# for subgraph() 
+my $VERSION="1.0.11";
+
+use FindBin qw($Bin);
+use lib "$Bin/lib/";
+use lib "$Bin/../lib/";
+use POSIX qw(setsid);
+use File::Temp qw/ tempfile tempdir /;
+use File::Copy;
+use Cwd;
+use Fcntl;
+use Cwd 'abs_path';
+use Getopt::Long;
+use Pod::Usage;
+use CodeViz::Graph;
+use CodeViz::Format;
+use CodeViz::Output;
+use CodeViz::IPC;
+use CodeViz::PPStack;
+use CodeViz::PPCStack;
+use CodeViz::PPOprofile;
+use CodeViz::SourceMarkup;
+use strict;
+no strict 'refs';
+
+# Global variables affecting program. All of these except the TEMP file related
+# variables are set as command line parameters or are read from the pipe if in
+# daemon mode
+my $MAXDEPTH=-1;
+my $FUNC;
+my $FUNC_RX;
+my $TRIM=0;
+my $DOT="dot";
+my $USE_SHIGHLIGHT;
+my $LOCATION;
+my $ALL_LOCS;
+my $PLAIN_OUTPUT=0;
+my $SHOW;
+my $SHOW_RX="";
+my $IGNORE="";
+my $IGNORE_RX="";
+my $NOEXTERN=0;
+my $GRAPH="./full.graph";
+my $KEEPSUBGRAPH;
+my $REVERSE=0;
+my $OUTPUT="--unset--";
+my $OUTPUT_TYPE="ps";
+my $OUTPUT_FONT="Helvetica";
+my $OUTPUT_FONTSIZE="12";
+my $OUTPUT_LAYOUT="TB";
+my $OUTPUT_LONG=0;
+my $VERBOSE;
+my $SHOWVERSION;
+my $HELP=0;
+my $MAN=0;
+my $HEADER;
+my ($DAEMON, $CLIENT);
+my $WEB;
+my $CSS;
+my $BASEURL="--unset--";
+my $SOURCE_ROOT=getcwd;
+my $QUIT=0;
+my $STDERR="STDERR";
+my $STDOUT="STDOUT";
+my $TOTALVISITS;
+my $PPSTACK;
+my $PPCSTACK;
+my $PPOPROFILE;
+my ($TMPDIR, $TMPFD, $TEMP);
+
+# Alternative linux loader. If you don't know why you might need this, you don't
+# need it at all. If this changed, ensure you update it in IPC.pm as well
+my $LDSO="";
+
+# Hash lists needed by recursive functions
+my %ingraph;		# Bool indicating if a function is in a graph
+my %scanned;		# List of functions that have been traversed
+my %funclist;		# Full list of functions to analyse
+my @funclist_re;	# Regular expression list to match for function lists
+my %ignorelist;		# List of functions to not show in graph
+my @ignorelist_re;	# Reg-Ex Array of functions to display but not traverse
+my %showlist;		# List of functions to display but not traverse
+my @showlist_re;	# Reg-Ex Array of functions to display but not traverse
+my %trimlist;		# List of functions to trim by default
+my %sourceFiles;	# List of source files that contain nodes
+my %dag;		# This is the DAG representing the call graph
+
+# Parse command line arguements
+GetOptions(
+    'scss=s'          => \$CSS,
+    'plain'           => \$PLAIN_OUTPUT,
+    'stderr=s'        => \$STDERR,
+    'stdout=s'        => \$STDOUT,
+    'base-url=s'      => \$BASEURL,
+    'd|maxdepth=s'    => \$MAXDEPTH,
+    'f|function=s'    => \$FUNC,
+    'z|func-re=s'     => \$FUNC_RX,
+    'g|graph=s'       => \$GRAPH,
+    'h|help'          => \$HELP,
+    'i|ignore=s'      => \$IGNORE,
+    'j|ignore-re=s'   => \$IGNORE_RX,
+    'no-extern'        => \$NOEXTERN,
+    'k|keep'          => \$KEEPSUBGRAPH,
+    'l|location'      => \$LOCATION,
+    'a|all-locs'      => \$ALL_LOCS,
+    'm|man'	      => \$MAN,
+    'p|daemon'        => \$DAEMON,
+    'q|client'        => \$CLIENT,
+    'o|output=s'      => \$OUTPUT,
+    'r|reverse'	      => \$REVERSE,
+    's|show=s'        => \$SHOW,
+    'y|show-re=s'     => \$SHOW_RX,
+    't|trim'	      => \$TRIM,
+    'v|verbose'	      => \$VERBOSE,
+    'version'         => \$SHOWVERSION,
+    'output-type=s'   => \$OUTPUT_TYPE,
+    'output-font=s'   => \$OUTPUT_FONT,
+    'output-fontsize=s'   => \$OUTPUT_FONTSIZE,
+    'output-layout=s' => \$OUTPUT_LAYOUT,
+    'long'            => \$OUTPUT_LONG,
+    'shighlight'      => \$USE_SHIGHLIGHT,
+    'e|source-root=s' => \$SOURCE_ROOT,
+    'pp-stack=s'      => \$PPSTACK,
+    'pp-cstack=s'     => \$PPCSTACK,
+    'pp-oprofile=s'   => \$PPOPROFILE,
+    'x|quit'          => \$QUIT);
+
+# Set LOCATIONS if ALL_LOCS is set
+$LOCATION = 1 if $ALL_LOCS == 1;
+
+# Print usage if necessary
+pod2usage(-exitstatus => 0, -verbose => 0) if $HELP;
+pod2usage(-exitstatus => 0, -verbose => 2) if $MAN;
+if ($SHOWVERSION) {
+  print "(CodeViz) gengraph $VERSION\n";
+  exit 1;
+}
+
+# Check layout is sensible
+if ( $OUTPUT_LAYOUT!~/LR|RL|TB|BT/) {
+  die_nice("--output-layout must be one of LR RL TB or BT\n");
+  exit;
+}
+
+# Check that a function has been requested. If being run in daemon mode,
+# it doesn't matter as we don't know what function to generate yet
+if ( ($FUNC . $FUNC_RX) eq "" && !$DAEMON && !$QUIT) {
+  die_nice("Give a function to graph\n");
+  exit;
+}
+
+# Check if the output type should be plain
+if ($PLAIN_OUTPUT) { $OUTPUT_TYPE="plain"; }
+
+# Set the verbosity level and set if it's a daemon. If daemon is set, an
+# error will result in a report but will not exist. If daemon is not set,
+# errors will result in the program exiting
+set_verbose($VERBOSE);
+set_daemon($DAEMON);
+
+# Shutdown a running daemon if it's running
+if ($QUIT) {
+  daemon_close();
+}
+
+# Use gengraph in client mode if requsted
+if ($CLIENT) {
+  client_open();
+  client_write($TRIM, $OUTPUT_TYPE, $ALL_LOCS, $LOCATION, $REVERSE, $FUNC, $FUNC_RX, $MAXDEPTH, $IGNORE, $IGNORE_RX, $SHOW, $SHOW_RX, $PLAIN_OUTPUT, $OUTPUT, $VERBOSE, $STDOUT);
+  exit;
+}
+
+# Update the 'source-highlight' command if a CSS is provided.
+# default CSS?
+if ($CSS) {
+  if ( $OUTPUT_TYPE !~ /html/ ) {
+    printverbose("CSS is only useful with a URL, the '-u' option. ");
+  }
+}
+
+# Create the base URL if it has not already been set
+if ($BASEURL eq "--unset--") {
+  if ($USE_SHIGHLIGHT) {
+    $BASEURL="file://$SOURCE_ROOT/html_sources/\%f.html#\%l";
+  } else {
+    $BASEURL="file://$SOURCE_ROOT/\%f.html#\%l";
+  }
+}
+
+# Test that dot is installed
+if ($OUTPUT_TYPE ne "plain") { test_dot_installed(); }
+
+# Read the input callgraph
+$HEADER = read_inputgraph($GRAPH, $LOCATION, $OUTPUT_TYPE, $BASEURL, $OUTPUT_FONT, $OUTPUT_FONTSIZE, \%dag);
+
+$FUNC = resolveNode($FUNC);
+
+# Check if the function requested is ambiguous
+
+# Test dot generation for the requested type and the given header. The
+# actual header used is returned in case it is different
+$HEADER = test_dot_generate($OUTPUT_TYPE, $OUTPUT_FONT, $HEADER);
+
+# Print startup message if in daemon mode
+if ($DAEMON) {
+  printverbose("Starting Call Graph Server\n");
+  daemon_open();
+
+  # Test the various output formats
+  $HEADER = test_dot_generate("gif", $OUTPUT_FONT, $HEADER);
+}
+
+
+# Generate trimlist
+generate_trimlist();
+
+# Test if source-highlight is available
+if ($USE_SHIGHLIGHT) { test_shighlight_installed(); }
+
+# Finish startup if in daemon mode and fork off
+if ($DAEMON) {
+
+  printverbose("Call Graph Server Started\n");
+
+  # Fork off as daemon
+  chdir("/");
+  defined(my $pid = fork) || die_nice("While forking: $!");
+  exit if $pid;
+  setsid || die_nice("Can't start a new session: $!");
+
+}
+
+# Generate the requested callgraph or go into a loop in daemon mode
+gengraph_main();
+
+# Program end
+exit;
+
+# This is the main gengraph loop. It is p
+sub gengraph_main() {
+  my $doonce=1;			# Enter loop at least once
+  my $line;			# Line of input read from pipe
+  my ($afunc, $dfunc, $declared);
+
+  # Create temporary directory
+  my $TEMPDIR = tempdir( CLEANUP => 1 );
+
+  while ($doonce || $DAEMON) {
+    # In non-daemon mode, this loop will execute just once
+    $doonce = 0;
+
+    # In daemon mode, read the parameters of the graph to create. In normal
+    # mode, this will be read from the command line
+    if ($DAEMON) {
+      # Delete all elements in hash arrays
+      delete @scanned{keys %scanned};
+      delete @ingraph{keys %ingraph};
+
+      # Delete ignore/show lists
+      delete @funclist{keys %funclist};
+      delete @ignorelist{keys %ignorelist};
+      delete @showlist{keys %showlist};
+      delete @showlist{keys %showlist};
+
+      # Delete regular expression lists
+      undef @ignorelist_re;
+      undef @showlist_re;
+      undef @funclist_re;
+
+      # Close the extra standard error log
+      close STDERR_EXTRA;
+
+      # Parse input
+      $FUNC = $MAXDEPTH = $IGNORE = $SHOW = $OUTPUT = "";
+      $FUNC_RX = $IGNORE_RX = $SHOW_RX = "";
+      $TRIM = $OUTPUT_TYPE = $LOCATION = $REVERSE = $PLAIN_OUTPUT = $VERBOSE = 0;
+
+      # Read from pipe
+      ($TRIM, $OUTPUT_TYPE, $ALL_LOCS, $LOCATION, $REVERSE, $FUNC, $FUNC_RX, $MAXDEPTH, $IGNORE, $IGNORE_RX, $SHOW, $SHOW_RX, $PLAIN_OUTPUT, $OUTPUT, $VERBOSE, $STDOUT, $STDERR) = daemon_read();
+
+
+      # Set LOCATIONS if ALL_LOCS is set
+      $LOCATION = 1 if $ALL_LOCS == 1;
+
+      # Check a function was actually requested
+      if (!defined $FUNC || ($FUNC . $FUNC_RX) eq "") {
+        printverbose("No function was specified\n");
+	next;
+      }
+
+    }
+
+    # Re-open stderr if errors are not going to standard out
+    if ($STDERR ne "STDERR") {
+      printverbose("Opening extra stderr: $STDERR\n");
+      if (!open(STDERR_EXTRA, ">$STDERR")) {
+        print STDOUT ("Failed to reopen stderr to: $STDERR\n");
+      }
+    }
+ 
+   # Build ignore/show lists
+    printverbose("Generating ignore/show function list\n");
+    foreach $afunc (split(/;/, $FUNC))      { $funclist{$afunc} = 1; }
+    foreach $afunc (split(/;/, $SHOW))      { $showlist{$afunc} = 1; }
+    foreach $afunc (split(/;/, $SHOW_RX))   { push @showlist_re, qr:$afunc:; }
+    foreach $afunc (split(/;/, $IGNORE))    { $ignorelist{$afunc} = 1; }
+    foreach $afunc (split(/;/, $IGNORE_RX)) { push @ignorelist_re, qr:$afunc:;}
+
+    foreach my $re (split(/;/, $FUNC_RX)) {
+      foreach $afunc (keys %dag) {
+	$funclist{$afunc} = 1 if ($afunc =~ /$re/);
+      }
+    }
+
+    # Generate sub graph for each function requested
+    my $tmpfd_opened=0;
+    foreach $afunc (keys %funclist) {
+      printverbose("Toplevel function: $FUNC\n");
+      $ingraph{$afunc} = 1;
+      $dfunc = $dag{$afunc};
+
+      # Set output filename if not set already
+      if ( $OUTPUT eq "--unset--" ) {
+        $OUTPUT="$afunc";
+	$OUTPUT .= ".$OUTPUT_TYPE";
+      }
+
+      # Open temporary file for graph
+      if (!$tmpfd_opened) {
+        if ($PLAIN_OUTPUT) {
+          printverbose("Opened graph output file: $OUTPUT\n");
+          open($TMPFD, ">$OUTPUT") || die("Failed to open output file: $OUTPUT");
+        } else {
+          ($TMPFD, $TEMP) = tempfile( "codevizXXXX", DIR => $TEMPDIR );
+          printverbose("Opened graph output file: $TEMPDIR\n");
+        }
+
+	$tmpfd_opened=1;
+        print $TMPFD $HEADER;
+	print $TMPFD "rankdir=$OUTPUT_LAYOUT;\n";
+      }
+
+      # Set node attributes to show where the graph starts
+      setNodeAttribute("shape",     "box",         \$dag{$afunc});
+      setNodeAttribute("fillcolor", "#dddddd",     \$dag{$afunc});
+      setNodeAttribute("style",     "filled,bold", \$dag{$afunc});
+
+      # Alter output filename to remove scope operators
+      $OUTPUT =~ s/::/__/g;
+
+      $TOTALVISITS=0;
+      if ( $REVERSE == 1) { subgraph(0, "callers", \$dfunc); }
+      else                { subgraph(0, "callees", \$dfunc);         }
+    }
+
+    # Make sure there is a graph to print
+    if ($TOTALVISITS == 0) {
+      printverbose("Warning: Generated empty graph\n");
+      printerror("Empty output graph, requested function does not exist\n");
+
+      next;
+    }
+
+    # Perform postprocessing if requested
+    printverbose("Doing post-processing steps\n");
+    if ($PPCSTACK ne "")   { PPCStack($PPCSTACK, \%dag, \%ingraph); }
+    if ($PPSTACK ne "")    { PPStack($PPSTACK, \%dag); }
+    if ($PPOPROFILE ne "") { PPOprofile($PPOPROFILE, \%dag); }
+
+    # Print out the node attributes that have been set
+    foreach $afunc (keys %ingraph) { printNode($afunc, $TMPFD, $LOCATION, \%dag); }
+
+    # Write out end of graph
+    print $TMPFD "}\n";
+    close $TMPFD;
+
+    # Generate Postscript/gif
+    printverbose("Generating callgraph with dot\n");
+    $OUTPUT =~ s/\(.*\)//;
+    renderGraph($OUTPUT_TYPE, $TEMP, $OUTPUT);
+
+    # Make sure the generation succeeded
+    if (-e $OUTPUT) { printverbose("Graph generated: $OUTPUT\n"); }
+    else {printverbose("WARNING: Output graph ($OUTPUT) was not generated by dot!\n");}
+
+    # Cleanup temp files
+    if ($KEEPSUBGRAPH) { move($TEMP, "./sub.graph"); }
+    else               { unlink ($TEMP); }
+
+    # Generate HTML source files if outputting HTML
+    if ($OUTPUT_TYPE =~ /html/i) { sourceMarkup($CSS, $SOURCE_ROOT, $USE_SHIGHLIGHT, \%sourceFiles); }
+  }
+
+}
+
+# This is a recursive function used to traverse the DAG and print a call
+# graph. The direction of the callgraph is determined by the "direction"
+# parameter. The function basically traverses the dag but checks the ignorelist,
+# showlist, trimlist hashes and the requested MAXDEPTH to determine when it
+# should and should not traverse
+sub subgraph($$$) {
+  my ($depth, $direction, $ffrom) = @_;
+  my $skip;
+  my $line;
+  my $count;
+  my ($fto);
+  my ($ffrom_name, $fto_name);
+  my ($pfrom, $pto);
+  my ($acall, $tto, $loc, $label); # Needed only for printing call locations
+
+  # Get the name of the functioon
+  $ffrom_name = $$ffrom->{'name'};
+
+  # Test if we have scanned this already
+  if ($scanned{$ffrom_name} == 1) { return; }
+  $scanned{$ffrom_name} = 1;
+  printverbose("Scanning: $ffrom_name\n");
+
+  # Test if the bottom depth has been reached
+  if ($MAXDEPTH == $depth) {
+    printverbose("Max depth reached at $ffrom_name\n");
+    return;
+  }
+
+  # Find every function that is called
+  foreach $fto (@{$$ffrom->{$direction}}) {
+
+    # Get the name of the callee function
+    $fto_name = $$fto->{'name'};
+
+    # Add external functions to the ignore list if desired
+    if($NOEXTERN && !$$fto->{'callocs'}) {
+	$ignorelist{$fto_name} = 1;
+    }
+
+    # Check if to ignore this function
+    if ((( $ignorelist{$fto_name} != 1 ) &&
+        ( ! grep { $fto_name =~ m:$_: } @ignorelist_re )) &&
+        ($TRIM == 0 || $trimlist{$fto_name} != 1)
+       ) {
+
+      # Print out graph
+      $pfrom = $ffrom_name;
+      $pto   = $fto_name;
+
+      # If the graph is being terminated here, print the node differently
+      if ( $showlist{$pto} == 1 || ( grep { $pto =~ m:$_: } @showlist_re ))
+      {
+          setNodeAttribute("shape", "box",  \$dag{$pto});
+          setNodeAttribute("style", "bold", \$dag{$pto});
+          setNodeAttribute("color", "red",  \$dag{$pto});
+      }
+
+      # Place "'s around C++ member functions and function pointers
+      $pfrom = "\"$pfrom\"";
+      $pto   = "\"$pto\"";
+
+      # Strip off parameter information unless asked to keep it
+      #if (!$OUTPUT_LONG) {
+        #$pfrom =~ s/\(.*\)//;
+	#$pto   =~ s/\(.*\)//;
+      #}
+
+      # Print out graph element. The order they are printed in depends on the 
+      # graph direction
+      if ($direction eq "callees") { print $TMPFD "$pfrom -> $pto"; }
+      else                         { print $TMPFD "$pto -> $pfrom"; }
+
+      # Print out the location of the call if requested
+      my $locs;
+      if ($direction eq "callees") { $locs = $$ffrom->{'callocs'}; }
+      else                         { $locs = $$fto->{'callocs'}; }
+      my $ptr;
+      if ($direction eq "callees") { $ptr = $pto; }
+      else                         { $ptr = $pfrom; }
+      if ($ALL_LOCS) {
+        $label="";
+        foreach $acall (@{$locs}) {
+          ($tto, $loc) = split(/~/, $acall);
+          if ("$tto" eq $ptr) { $label .= "$loc "; }
+        }
+        if ($label ne "") { print $TMPFD " [label=\"$label\"]" }
+      }
+
+      print $TMPFD ";\n";
+
+      # Record that the nodes appear in the subgraph
+      $TOTALVISITS += 2;
+      $ingraph{$ffrom_name} = $ingraph{$fto_name} = 1;
+      $sourceFiles{$dag{$ffrom_name}->{'file'}} = 1;
+      $sourceFiles{$dag{$fto_name}->{'file'}} = 1;
+
+      # Traverse further if necessary
+      if ($showlist{$fto_name} != 1 &&
+          ( !grep { $fto_name =~ m:$_: } @showlist_re ) &&
+          $$fto->{'outbound'} != 0) { subgraph($depth+1, $direction, $fto); }
+
+    }
+
+  }
+
+  # Check for graphs of exactly one node. Unusual, but can happen
+  if (defined $$ffrom->{'name'} && $TOTALVISITS == 0) {
+    $TOTALVISITS=1;
+  }
+}
+
+# This generates a list of functions that should no be be traversed
+# They are mainly applicable to just the Linux Kernel but if graphing
+# the kernel, it is highly recommended that the -t switch is used
+sub generate_trimlist {
+
+printverbose("Generating trimlist\n");
+
+%trimlist=(
+"add_preempt_count" => 1,
+"allocflags_to_migratetype" => 1,
+"bad_page" => 1,
+"__bad_percpu_size" => 1,
+"bitmap_zero" => 1,
+"__builtin_expect" => 1,
+"__builtin_return_addressj" => 1,
+"__builtin_constant_p" => 1,
+"__change_bit" => 1,
+"__constant_c_and_count_memset" => 1,
+"__constant_c_memset" => 1,
+"__constant_memcpy" => 1,
+"current_thread_info" => 1,
+"__memcpy" => 1,
+"__might_sleep" => 1,
+"__set_current_state" => 1,
+"__wake_up" => 1,
+"__xchg" => 1,
+"atomic_add" => 1,
+"atomic_dec" => 1,
+"atomic_dec_and_lock" => 1,
+"atomic_dec_and_test" => 1,
+"atomic_inc" => 1,
+"atomic_sub" => 1,
+"clear_bit" => 1,
+"cond_resched" => 1,
+"_cond_resched" => 1,
+"congestion_wait" => 1,
+"constant_test_bit" => 1,
+"count" => 1,
+"__count_vm_event" => 1,
+"__count_vm_events" => 1,
+"cpu_logical_map" => 1,
+"daemonize" => 1,
+"debug_smp_processor_id" => 1,
+"debug_check_no_locks_freed" => 1,
+"debug_check_no_obj_freed" => 1,
+"DECLARE_WAITQUEUE" => 1,
+"die" => 1,
+"do_invalid_op" => 1,
+"down" => 1,
+"down_read" => 1,
+"down_write" => 1,
+"down_trylock" => 1,
+"dump_stack" => 1,
+"ERR_PTR" => 1,
+"FASTCALL" => 1,
+"flush_tlb_range" => 1,
+"flush_tlb_all" => 1,
+"get_current" => 1,
+"gfp_zone" => 1,
+"if" => 1,
+"init_waitqueue_head" => 1,
+"likely" => 1,
+"list_add" => 1,
+"list_add_tail" => 1,
+"list_del" => 1,
+"list_del_init" => 1,
+"list_empty" => 1,
+"list_empty_careful" => 1,
+"list_move" => 1,
+"list_move_tail" => 1,
+"list_for_each" => 1,
+"list_splice" => 1,
+"list_splice_init" => 1,
+"locks_verify_locked" => 1,
+"lock_kernel" => 1,
+"__mod_zone_page_state" => 1,
+"memcpy" => 1,
+"min" => 1,
+"might_sleep" => 1,
+"max" => 1,
+"memset" => 1,
+"__memset_generic" => 1,
+"need_resched" => 1,
+"PageAnon" => 1,
+"page_count" => 1,
+"page_mapcount" => 1,
+"page_zone" => 1,
+"PageLocked" => 1,
+"PageLRU" => 1,
+"PageActive" => 1,
+"PageDirty" => 1,
+"panic" => 1,
+"__pfn_to_section" => 1,
+"pgd_bad" => 1,
+"pgd_offset" => 1,
+"pgd_present" => 1,
+"pgd_none" => 1,
+"pmd_bad" => 1,
+"pmd_offset" => 1,
+"pmd_none" => 1,
+"pte_bad" => 1,
+"pte_mkdirty" => 1,
+"pte_mkwrite" => 1,
+"pte_mkyoung" => 1,
+"pte_none" => 1,
+"pte_offset" => 1,
+"pte_write" => 1,
+"phys_to_virt" => 1,
+"preempt_schedule" => 1,
+"prefetch" => 1,
+"printk" => 1,
+"printk_ratelimit" => 1,
+"prune_dcache" => 1,
+"prune_icache" => 1,
+"PTR_ERR" => 1,
+"__raw_local_irq_save" => 1,
+"raw_local_irq_restore" => 1,
+"raw_irqs_disabled_flags" => 1,
+"raw_smp_processor_id" => 1,
+"_raw_read_lock" => 1,
+"_raw_spin_lock_flags" => 1,
+"_raw_spin_lock" => 1,
+"_raw_spin_unlock" => 1,
+"__raw_spin_unlock" => 1,
+"read_lock" => 1,
+"_read_lock" => 1,
+"read_unlock" => 1,
+"_read_unlock" => 1,
+"rt_task" => 1,
+"schedule" => 1,
+"schedule_timeout" => 1,
+"schedule_timeout_uninterruptible" => 1,
+"should_fail_alloc_page" => 1,
+"__section_mem_map_addr" => 1,
+"set_bit" => 1,
+"set_in_cr4" => 1,
+"snprintf" => 1,
+"sprintf" => 1,
+"spin_lock" => 1,
+"_spin_lock" => 1,
+"spin_lock_irq" => 1,
+"spin_lock_irqsave" => 1,
+"_spin_lock_irqsave" => 1,
+"__spin_lock_irqsave" => 1,
+"spin_unlock" => 1,
+"_spin_unlock" => 1,
+"spin_unlock_irq" => 1,
+"spin_unlock_irqrestore" => 1,
+"_spin_unlock_irqrestore" => 1,
+"__spin_unlock_irqrestore" => 1,
+"strlen" => 1,
+"strcmp" => 1,
+"strcpy" => 1,
+"sub_preempt_count" => 1,
+"test_and_set_bit" => 1,
+"test_and_clear_bit" => 1,
+"test_thread_flag" => 1,
+"test_ti_thread_flag" => 1,
+"tlb_finish_mmu" => 1,
+"tlb_gather_mmu" => 1,
+"unlikely" => 1,
+"unlock_kernel" => 1,
+"up" => 1,
+"up_read" => 1,
+"up_write" => 1,
+"waitqueue_active" => 1,
+"variable_test_bit" => 1,
+"__virt_addr_valid" => 1,
+"virt_to_phys" => 1,
+"write_lock" => 1,
+"yield" => 1,
+"zone_clear_flag" => 1,
+"zone_page_state" => 1,
+"zone_statistics" => 1);
+
+}
+
+1;
+__END__
+=head 1 NAME
+
+gengraph - Generate a call graph for a given set of functions
+
+=head1 SYNOPSIS
+
+gengraph [options]
+
+  Main Options:
+  -f, --function    Top level functions to graph, quote if more than one
+  -t, --trim        Ignore a set of Linux kernel functions (Kernel specific)
+  -i, --ignore      Functions to ignore
+  -s, --show        Show a function but not the sub-functions
+  -d, --maxdepth    Maximum depth of graph
+  -r, --reverse     Place the function at the bottom and graph callers
+  -g, --graph       Source graph from by genfull (Default: ./full.graph)
+  -l, --location    Show the location of the function declarations
+  -a, --all-locs    Show the location of declarations and calls
+  -k, --keep        Keep the sub.graph file
+  -o, --output      Output postscript filename
+  -v, --verbose     Verbose output
+  -h, --help        Print this message
+  --no-extern       Ignore functions not defined in the current source
+  --output-type     Set the output type: ps, html png or gif (default: ps)
+  --output-font     What font to use for output graph (default: Helvetica)
+  --output-fontsize Size of output font (default: 12)
+  --output-layout   Layout direction: LR|RL|BT|TB (default TB)
+  --version         Print the version number
+
+  HTML Options (specify --output-type=html above):
+  -e, --source      Root of the source code being graphed
+  --html-fragment   Generate HTML suitable for including in another page
+  --base-url        Template URL to use for hyperlinks in the web page
+  --shighlight      Use source-highlight for HTML links
+  --scss            Cascading style-sheet to use for source-highlight
+
+  Regular Expression Options:
+  -z, --func-re     Regular expressions of top-level functions to graph
+  -j, --ignore-re   Regular expressions of functions to ignore
+  -y, --show-re     Regular expressions of functions to show but not traverse
+
+  Post-Processing Options:
+  --pp-stack        Show stack usage and highlight excessive usage
+  --pp-cstack       Show cumulative usage in a given set of code paths
+  --pp-oprofile     Show function costs from an oprofile report
+
+  Daemon Options:
+  -p, --daemon      Run gengraph as a daemon
+  -q, --client      Run gengraph as a client to a gengraph daemon
+  --plain           Output the dot graph file but do not use dot
+  --stdout          Use this file as standard out instead of normal
+  --stderr          Print errors to this file instead of STDERR
+
+=head1 OPTIONS
+
+=item B<-f, --function>
+
+The name of the top level function or functions to graph. This will be
+the starting point in the graph, be it a forward or reverse call graph
+
+=item B<-F, --func-re>
+
+This is a list of regular expressions separated by semicolons used to
+make a list of top-level functions to graph. It then behaves as if a
+list of functions were provided to --function. If --function was not
+specified, use the -o switch or the output filename might cause dot to
+fail
+
+=item B<-d, --maxdepth>
+
+Some graphs will be exceptionally deep, this parameter will limit the depth.
+Highly recommended you specify this as 5 or some other small number the first
+time a new function is graphed
+
+=item B<-g, --graph>
+
+The name of the B<full.graph> generated by B<genfull> to use. By default, it
+will open B<full.graph> in the current directory
+
+=item B<-i, --ignore>
+
+Some graphs will contain functions which are of no interest. This parameter
+will prevent a list of functions been displayed. The list of functions should
+be a semicolon separated list in quotes (")
+
+=item B<-I, --ignore-re>
+
+Similar to --ignore except that the parameter is matched against a regular
+expression. If the function name matches the pattern, the function will be
+ignored.
+
+=item B<-s, --show>
+
+The ignore parameter will omit the functions, this parameter will display
+the function but not traverse it further. This can be convinient for some API
+functions
+
+=item B<-S, --show-re>
+
+Similar to --show except that the parameter is a regular expression which is
+matched against the function name. If the pattern matches, the function will
+be displayed but not traversed
+
+=item B<-l, --location>
+
+Depending on the collection method used with B<genfull>, the location of
+the function declaration location may be known. This switch will display
+whatever information is available. With the B<cdepn> collection method,
+the source filename and line number will be displayed. With the B<cobjdump>
+method, the address of the function will be available.
+
+=item B<-S, --no-extern>
+
+Ignore functions which are called but not defined.
+
+=item B<-r, --reverse>
+
+Most generated graphs are forward graphs with the requested functions at the
+root of the tree. This parameter will generate a graph with the requested
+functions at the bottom of the graph
+
+=item B<-t, --trim>
+
+This is a Linux Kernel specific paramter. There is a large number of functions
+which are rarely, if ever of interest such as printk(). This parameter will
+omit some common ones. For a full list see the generate_trimlist() function
+at the bottom of the B<gengraph> script
+
+=item B<-k, --keep>
+
+The generated graph is a small subset of the full graph. If this flag is
+specified, the dot file used to create the file will be saved in ./sub.graph .
+
+=item B<--pp-stack>
+
+Post-processing step which shows stack usage and can highlight nodes which
+use too much stack. The full.graph used must have been generated with
+the --pp-stack option to genfull or the necessary information will not be
+available. To show how much stack each node is using, add the "showstack"
+option. To highlight nodes using more than N bytes, add largestack=N . For
+example, to show all stack usage and highlight nodes that use more than 100
+bytes, the option is;
+
+  --pp-stack="showstack,largestack=100"
+
+=item B<--pp-cstack>
+
+Unlike the --pp-stack post-processing module, this one calcualtes cumulative
+usage in a path between two functions. This useful for seeing how much
+stack is used between a given system call and a much lower-level function.
+Nodes in the path are highlighted in light blue and if requested, heavy
+stack usage will be shown in dark blue. 
+
+--pp-cstack=largeusage=7182,showcumulative="__alloc_pages-bad_range prep_new_page-show_trace"
+
+=item B<--pp-oprofile>
+
+Post-processing step which shows the function costs according to an
+oprofile report. The parser is pretty damn stupid.
+
+=item B<-p, --daemon>
+
+This runs gengraph as a daemon that listens on a pipe in /tmp/codeviz.pipe .
+The feature is desirable when the input graph is very large and takes time to
+read. Once it is running, use gengraph with the -q switch to have the daemon
+perform the work. This can drastically reduce the time needed to generate a
+graph and is essentialy if using the tool as part of a webpage. It is also
+advised that you use the --stderr switch to redirect standard error to an
+alternative stream so a client program can get proper error reporting
+
+=item B<-q, --client>
+
+Once a gengraph daemon is running (-p), this switch is used to contact the
+daemon. It works by writing the details of the request to /tmp/codeviz.pipe .
+This feature is a little new and has two purposes. The first is to reduce
+the time required to generate a graph and the second is for use with web
+servers that require the graph to be quickly generated
+
+=item B<--output-type>
+
+By default, gengraph generates postscript output which is the most reliable
+method for getting a nice viewable graph. Support is also there for outputting
+GIF and HTML output. The use of GIF instead of PNG is because of the dependance
+on GraphViz rather than a choice made by me. Generating HTML output implies that
+a GIF image will also be created.
+
+When outputting as HTML, HTML page generated will include an image map so
+that the graph can be clicked on. The links will be to a source file unless
+--shighlight is specified which will generate links to a HTML-marked-up version
+of the source. If you wish to use your own links, see the --base-url switch.
+The base-url switch has been used to create links to LXR marked-up versions
+of the source.
+
+=item B<--output-font>
+
+By default, dot will try to generate graphs using the Helvetica font. This
+option will override that. If it fails, it will fall back to the Arial font. If
+that does not work, one cruddy looking graph will probably be rendered.
+
+=item B<--output-fontsize>
+
+By default, dot will use size 12 font for the output graph. This option
+overwrites that default.
+
+=item B<--output-layout>
+
+By default, the function of interest will appear at the top of the graph and
+the flow of the graph will be from top to bottom (TB). Using this option,
+it can be bottom to top (BT), left to right (LR) or right to left (RL).
+
+=item B<--html-fragment>
+
+This is similar to --html except the outputted HTML file is just a fragment
+which should be included with another page.
+
+=item B<--shighlight>
+
+Use source-highlight to create additional web pages with highlight source
+
+=item B<-e, --source>
+
+If using something like source-highlight to generate source, but the source
+is not in the current directory, then use this switch to specify where it
+is
+
+=item B<-o, --output>
+
+By default, the output graph is B<functionname.ps>. If a list of functions
+are being graphed, the name will be based on the first function call. This
+parameter will override that. If the function being graphed in a member
+function, the scope operator (::) will be replaced by underscores (__)
+in the output filename.
+
+=item B<--plain>
+
+This option tells gengraph to just output the graph file (i.e. sub.graph) to
+the requested output file. dot will not be run in this case. This is useful
+when a graph layout engine other than dot is being used
+
+=item B<--base-url>
+
+This is a template URL that is used to generate hyperlinks in an imagemap
+for a web page. In the template, the following special strings are converted;
+  %f - Filename containing the target function
+  %n - Name of the function
+  %l - Line the function is declared on
+
+The default URL is "file://SOURCE_ROOT/html_sources where SOURCE_ROOT is
+the root where the source is stored. The --shighlight switch outputs HTML
+generates sources to this directory. However, a link to LXR could be 
+created by using a template like
+
+http://lxr.linux.no/lxr/http/source/%f?v=2.4.22#%l
+
+or alternatively, have it jump to the identifier search feature of LXR with
+
+=item B<--stdout>
+
+Use this file as standard out. This is only useful when running as daemon
+mode and the -v switch is specified
+
+=item B<--stderr>
+
+Instead of printing errors to STDERR, print them to this alternative stream
+instead. This is most useful when running in daemon mode to detect if the
+generation was successful or not.
+
+http://lxr.linux.no/lxr/http/ident?v=2.4.22&i=%n
+
+=item B<-v, --verbose>
+
+Verbose output
+
+=head1 DESCRIPTION
+
+This script will generate subgraphs based on a full source tree graph
+generated by B<genfull>. The output is to a file called B<sub.graph> and
+B<dot> is used to create a postscript file based on it.
+
+=head1 AUTHOR
+
+Written by Mel Gorman (mel@csn.ul.ie)
+
+=head1 REPORTING BUGS
+
+Report bugs to the author
+
+=cut
+ElOPF

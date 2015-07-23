@@ -1,0 +1,22 @@
+digraph fullgraph {
+node [ fontname=Helvetica, fontsize=12 ];
+rankdir=TB;
+"main()" -> "std::operator<<(std::basic_ostream<char,_Traits>&,const char*) [with _Traits = std::char_traits<char>]";
+"main()" -> "simpleStaticFunc(int,int)";
+"simpleStaticFunc(int,int)" -> "simpleStaticFunc(int,int,int)";
+"main()" -> "classname::setValues(int,int)";
+"classname::setValues(int,int)" -> "classname::setValue1(int)";
+"classname::setValues(int,int)" -> "classname::setValue2(int)";
+"main()" -> "classname::printValues()";
+"classname::printValues()" -> "_Traits>::operator<<(std::basic_ostream<_CharT,_Traits>&(*)(std::basic_ostream<_CharT,_Traits>&)) [with _CharT = char,_Traits = std::char_traits<char>]";
+"classname::printValues()" -> "_Traits>::operator<<(int) [with _CharT = char,_Traits = std::char_traits<char>]";
+"_Traits>::operator<<(int) [with _CharT = char,_Traits = std::char_traits<char>]" -> "std::operator&(std::_Ios_Fmtflags,std::_Ios_Fmtflags)";
+"_Traits>::operator<<(int) [with _CharT = char,_Traits = std::char_traits<char>]" -> "std::ios_base::flags() const";
+"_Traits>::operator<<(int) [with _CharT = char,_Traits = std::char_traits<char>]" -> "_Traits>::operator<<(long unsigned int) [with _CharT = char,_Traits = std::char_traits<char>]";
+"_Traits>::operator<<(int) [with _CharT = char,_Traits = std::char_traits<char>]" -> "_Traits>::operator<<(long int) [with _CharT = char,_Traits = std::char_traits<char>]";
+"classname::printValues()" -> "std::operator<<(std::basic_ostream<char,_Traits>&,const char*) [with _Traits = std::char_traits<char>]";
+"main()" -> "exit(int)";
+"_Traits>::operator<<(std::basic_ostream<_CharT,_Traits>&(*)(std::basic_ostream<_CharT,_Traits>&)) [with _CharT = char,_Traits = std::char_traits<char>]"  [ with _CharT =" char," ];
+"main()"  [ fillcolor="#dddddd", style="filled,bold", shape="box" ];
+"_Traits>::operator<<(int) [with _CharT = char,_Traits = std::char_traits<char>]"  [ with _CharT =" char," ];
+}

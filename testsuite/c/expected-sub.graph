@@ -1,0 +1,15 @@
+digraph fullgraph {
+node [ fontname=Helvetica, fontsize=12 ];
+rankdir=TB;
+"main" -> "printf";
+"main" -> "malloc";
+"main" -> "exit";
+"main" -> "processStream";
+"processStream" -> "_processStream";
+"_processStream" -> "printf";
+"_processStream" -> "_processStream";
+"main" -> "manipulateStream";
+"manipulateStream" -> "printf";
+"main" -> "free";
+"main"  [ fillcolor="#dddddd", style="filled,bold", shape="box" ];
+}

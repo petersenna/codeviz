@@ -1,0 +1,272 @@
+#!/usr/bin/perl
+# genfull
+#
+# This script is responsible for searching through a source tree and
+# finding all the cdepn files. A call graph is generated based on the
+# individual cdepn files and outputted to a file suitable for use with
+# dot and gengraph
+my $VERSION="1.0.11";
+
+use FindBin qw($Bin);
+use lib "$Bin/../lib/";
+
+use Getopt::Long;
+use Pod::Usage;
+use CodeViz::Collect;
+use CodeViz::CollectPPStack;
+use CodeViz::Format;
+use Cwd 'abs_path';
+use strict;
+
+# Option variables
+my $SHOWVERSION;
+my $opt_files=-1;
+my $opt_toplevel="./";
+my $opt_subdirs="--nosubdirs--";
+my $opt_output="./full.graph";
+my $opt_method="cdepn";
+my $opt_verbose;
+my $opt_skip;
+my $opt_help;
+my $opt_man;
+
+my @cdepnlist;
+my $subdir;
+my $subdir_paths;
+
+# Post processing options
+my $PP_STACK="";
+
+# Get options
+GetOptions(
+  'file|f=s'   => \$opt_files,
+  'toplevel|d=s' => \$opt_toplevel,
+  'subdirs|s=s'  => \$opt_subdirs,
+  'method|g=s'   => \$opt_method,
+  'output|o=s'   => \$opt_output,
+  'help|h'       => \$opt_help,
+  'pp-stack=s'   => \$PP_STACK,
+  'skip'         => \$opt_skip,
+  'v|verbose'    => \$opt_verbose,
+  'version'    => \$SHOWVERSION,
+  'man|m'        => \$opt_man);
+pod2usage(-exitstatux => 0, -verbose => 0) if $opt_help;
+pod2usage(-exitstatus => 0, -verbose => 2) if $opt_man;
+if ($SHOWVERSION) {
+  print "(CodeViz) genfull $VERSION\n";
+  exit
+}
+set_verbose($opt_verbose);
+
+# Check the toplevel directory is ok
+$opt_toplevel = abs_path($opt_toplevel) . "/";
+die("$opt_toplevel is not a directory") if (! -d $opt_toplevel );
+
+# If only specific files or binaries are to be scanned, check to make
+# sure they exist and are files
+if ($opt_files != -1) {
+  foreach (split(/ /, $opt_files)) {
+    die("$_ is not a file") if (! -f $_);
+  }
+}
+
+# Append full path to subdirs list
+if ($opt_subdirs eq "--nosubdirs--") {
+  $subdir_paths = $opt_toplevel;
+} else {
+  foreach $subdir (split(/ /, $opt_subdirs)) {
+    $subdir_paths .= "$opt_toplevel$subdir ";
+  }
+}
+
+# Generate graph unless explicitly skipped
+if (!$opt_skip) {
+  gen_fullgraph($opt_method, $opt_toplevel, $opt_files, $subdir_paths, $opt_output);
+}
+
+# Perform postprocessing if requsted
+if ($PP_STACK ne "") { CollectPPStack($opt_output, $PP_STACK); }
+
+# Below this line is help and manual page information
+__END__
+
+=head1 NAME
+
+genfull - Generate a call graph from .cdepn files in a source tree
+
+=head1 SYNOPSIS
+
+genfull [options]
+
+ Main Options:
+  -d, --toplevel Top level source directory (Default: current)
+  -f, --file     Files to scan for data     (Default: find all files)
+  -s, --subdirs  Subdirectories to graph    (Default: all)
+  -g, --method   Method for collecting data (Default: cdepn)
+  -o, --output   Output graph               (Default: ./full.graph)
+  -h, --help     Print this message
+  --version      Print the version number
+
+ Post-Processing Options:
+  --skip         Skip collection and only post-process
+  --pp-stack     Calculate stack usage
+
+ For Linux kernel call graphs, the following calling is recommended 
+ genfull -s "arch/i386 net lib ipc mm fs net kernel init drivers"
+
+=head1 OPTIONS
+
+=item B<-d, --toplevel>
+
+The top level source tree to collect information from. By default, this is
+the current working directory.
+
+=item B<-f, --file>
+
+A list of files to scan. This is most useful when used in conjunction with
+the cobjdump method for generating call graphs. Only compiled binaries
+are useful for this collection method and using find to get all binaries
+could result in name collisions and overlapped call graphs which would be
+useless. It can also be used just to scan a single cdepn file
+
+=item B<-s, --subdirs>
+
+If desired, only specified subdirectories will be scanned. These directory
+names are relative to the top level source directory. By default, all
+subdirectories will be scanned
+
+=item B<-g, --method>
+
+Different methods may be used to collect information for call graphs. A
+large number of collections are available for both C and C++. B<cdepn> and
+B<cppdepn> require a patched compiler but B<cobjdump> and B<cppobjdump>
+require only objdump to be available. B<cncc> requires the ncc compiler.
+The default method is the B<cdepn> method.  The various methods are discussed
+in a later section.
+
+=item B<-o, --output>
+
+The output graph filename. This will be suitable for graph generation with dot.
+By default, it will be called ./full.graph
+
+=item B<--skip>
+
+Skip the collection part and just perform post-processing. This is handy
+when you already have a full.graph generated and just want to perform the
+post-processing.
+
+=item B<--pp-stack>
+
+This option calculates the stack usage for each function and places it in
+a node attribute called "stackuse" in the full.graph file. To see the options
+the post-processing modules supports, call "--pp-stack help", but currently
+the only option supported is objfile. This option is only really useful
+for the Linux kernel as normal applications grow their stack on demand.
+To calculate stack usage for the kernel, use "--pp-stack objfile=vmlinux"
+
+=head1 DESCRIPTION
+
+B<genfull> is responsible for scanning a source tree and collecting
+information for the generation of call graphs. Different collection methods
+may be used which are discussed in the next section. This is a list of them,
+the languages they are meant to be used with are in brackets
+
+B<cdepn>(C)   Collects information from .cdepn files outputted by a patched gcc
+
+B<cobjdump>(C)   Analyses a compiled binary which must not be stripped
+
+B<cncc>(C)   Collects information outputted by ncc
+
+B<cppdepn>(C++) Same as cdepn except for C++
+
+B<cppobjdump>(C++) Same as cobjdump except for C++
+
+Once the information is collected, it is outputted to a file as specified
+by the B<-o> switch (full.graph by default) which is suitable for rendering
+with B<dot> which comes with the GraphViz package. The graph that this program
+outputs is likely to be considerably large. In this case, B<gengraph> should
+be used to generate smaller graphs containing the functions of interest.
+
+=head1 COLLECTION METHODS
+
+=item B<cdepn>(C): This relies on a patched compiler to output information
+during compilation and produces very accurate call graphs. A patch was
+supplied with the CodeViz package for gcc. This patch should be applied and
+the source project compiled with the patched compiler. For each .c file,
+a .c.cdepn file is created with information relevant to call graphs such as
+the source file and line number functions are declared on. This collection
+method will identify macros inline functions but not macros.
+
+
+The .cdepn files will not identify macros so the cdepn method takes lessons
+from LXR(http://lxr.linux.no). After the .cdepn files are processed, it reads
+the C and header files used by the compiled source and parses them. The
+.cdepn information is trusted by default but where macros are involved,
+the information picked up by parsing like LXR is used instead.
+
+
+This method will produce accurate graphs unless function names are duplicated
+between files which can frequently happen, such as with the different arch
+layers in the Linux kernel.  If there is collisions, there is no way to
+resolve which one is right and graphs can get badly messed up. When the
+method completes, it'll print out how many collisions were found and how
+many functions were affected. If the number of colliding functions is too
+high, use -s to limit what directories in the source tree are analysed.
+
+Example usage: genfull -g cdepn -s /usr/src/linux
+
+=item B<cobjdump>(C): Patching a compiler is not always an option so this
+collection method just depends on the availability of B<objdump> which should
+be installed with the binutils package common to most distributions. This
+should be used with a compiled binary as object files on their own are
+insufficient so the use of the B<-f> switch is recommended to specify the
+binary of interest. Your mileage will vary considerably with this method
+as assembler output is highly dependent on the architecture type, compiler
+optimizations and so on. This method will not recognise inline functions
+or macros.
+
+Example usage: genfull -g cobjdump -s /usr/src/linux -f /usr/src/linux/vmlinux
+
+=item B<cncc>(C): This method relies on the availability of ncc
+(http://students.ceid.upatras.gr/~sxanth/ncc/index.html) and having the
+tree compiled with it to output .nccout (just like cdepn needs a patched gcc
+available). The ncc website and project has ample information on how to use
+ncc and CodeViz is able to parse the .nccout files it outputs. This method
+is similar in performance to B<cdepn> with one important difference. B<cncc>
+is able to understand and traverse function pointers which no other method
+can so. If you are examining code that depends heavily on function pointers
+or dispatch tables, this is the collection method for you.
+
+Example usage: genfull -g cncc -s /usr/src/linux
+
+This method will collect all the .nccout files below the
+current directory or just one file if used together with -f. The advantage
+of ncc analysis is that the call graph includes the pointer to function calls.
+Each pointer to function is reported as a pseudo-function that calls all
+the values assigned to it.
+
+Example usage: genfull -g cncc -f /usr/src/linux/code.map.nccout
+
+=item B<cppdepn>(C++): This is essentially the same as B<cdepn> except that
+it should be used for C++ projects.
+
+Example usage: genfull -g cppdepn -s /usr/src/avifile-0.6
+
+=item B<cppobjdump(C++)>: This is essentially the same as B<cobjdump> except
+that it should be used for C++ projects.
+
+Example usage: genfull -g cppobjdump -s /usr/src/avifile-0.6 -f /usr/src/avifile-0.6/player/aviplay
+
+=head1 AUTHOR
+
+Written by Mel Gorman (mel@csn.ul.ie)
+
+Original idea by Martin Devera (Devik)
+
+Help supporting ncc from Xanthakis Stelios (sxanth@ceid.upatras.gr)
+
+=head1 REPORTING BUGS
+
+Report bugs to mel@csn.ul.ie
+
+=cut

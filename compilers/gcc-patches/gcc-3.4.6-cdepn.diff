@@ -1,0 +1,184 @@
+diff -ur gcc-3.4.6-clean/gcc/cgraph.c gcc-3.4.6-cdepn/gcc/cgraph.c
+--- gcc-3.4.6-clean/gcc/cgraph.c	2004-06-01 02:43:51.000000000 +0300
++++ gcc-3.4.6-cdepn/gcc/cgraph.c	2006-06-21 20:34:04.000000000 +0300
+@@ -68,7 +68,8 @@
+ static GTY(())  struct cgraph_varpool_node *cgraph_varpool_nodes;
+ 
+ static struct cgraph_edge *create_edge (struct cgraph_node *,
+-					struct cgraph_node *);
++					struct cgraph_node *,
++					location_t call_location);
+ static hashval_t hash_node (const void *);
+ static int eq_node (const void *, const void *);
+ 
+@@ -152,7 +153,7 @@
+ /* Create edge from CALLER to CALLEE in the cgraph.  */
+ 
+ static struct cgraph_edge *
+-create_edge (struct cgraph_node *caller, struct cgraph_node *callee)
++create_edge (struct cgraph_node *caller, struct cgraph_node *callee, location_t call_location)
+ {
+   struct cgraph_edge *edge = ggc_alloc (sizeof (struct cgraph_edge));
+   struct cgraph_edge *edge2;
+@@ -180,6 +181,7 @@
+ 
+   edge->caller = caller;
+   edge->callee = callee;
++  edge->call_location = call_location;
+   edge->next_caller = callee->callers;
+   edge->next_callee = caller->callees;
+   caller->callees = edge;
+@@ -295,7 +297,7 @@
+ struct cgraph_edge *
+ cgraph_record_call (tree caller, tree callee)
+ {
+-  return create_edge (cgraph_node (caller), cgraph_node (callee));
++  return create_edge (cgraph_node (caller), cgraph_node (callee), input_location);
+ }
+ 
+ void
+diff -ur gcc-3.4.6-clean/gcc/cgraph.h gcc-3.4.6-cdepn/gcc/cgraph.h
+--- gcc-3.4.6-clean/gcc/cgraph.h	2004-01-24 01:36:03.000000000 +0200
++++ gcc-3.4.6-cdepn/gcc/cgraph.h	2006-06-21 20:34:04.000000000 +0300
+@@ -126,6 +126,9 @@
+   /* When NULL, inline this call.  When non-NULL, points to the explanation
+      why function was not inlined.  */
+   const char *inline_failed;
++
++  /* CodeViz: Location the call occurred at */
++  location_t call_location;
+ };
+ 
+ /* The cgraph_varpool data structure.
+diff -ur gcc-3.4.6-clean/gcc/cgraphunit.c gcc-3.4.6-cdepn/gcc/cgraphunit.c
+--- gcc-3.4.6-clean/gcc/cgraphunit.c	2004-05-06 02:24:30.000000000 +0300
++++ gcc-3.4.6-cdepn/gcc/cgraphunit.c	2006-06-21 20:34:04.000000000 +0300
+@@ -320,7 +320,10 @@
+ cgraph_analyze_function (struct cgraph_node *node)
+ {
+   tree decl = node->decl;
++  tree thisTree, calleeTree;
++  FILE *fnref_f;
+   struct cgraph_edge *e;
++  struct cgraph_edge *calleeEdge;
+ 
+   current_function_decl = decl;
+ 
+@@ -358,6 +361,33 @@
+   node->analyzed = true;
+   current_function_decl = NULL;
+ 
++  /* CodeViz: Output information on this node */
++  thisTree = node->decl;
++  if ((fnref_f = cdepn_open(NULL)))
++    {
++      fprintf(fnref_f,"F {%s} {%s:%d}\n",
++	  lang_hooks.decl_printable_name (thisTree, 2),
++	  DECL_SOURCE_FILE (thisTree), DECL_SOURCE_LINE (thisTree));
++
++    }
++
++  /* CodeViz: Output information on all functions this node calls */
++  for (calleeEdge = node->callees; calleeEdge; calleeEdge = calleeEdge->next_callee)
++    {
++      calleeTree = calleeEdge->callee->decl;
++      if (thisTree != NULL && 
++	  calleeTree != NULL &&
++	  (fnref_f = cdepn_open(NULL)) != NULL)
++	{
++	  fprintf(fnref_f, "C {%s} {%s:%d} {%s}\n",
++	      lang_hooks.decl_printable_name (thisTree, 2),
++	      calleeEdge->call_location.file, calleeEdge->call_location.line,
++	      lang_hooks.decl_printable_name (calleeTree, 2));
++	}
++      else
++	printf("CODEVIZ: Unexpected NULL encountered\n");
++    }
++  
+   /* Possibly warn about unused parameters.  */
+   if (warn_unused_parameter)
+     do_warn_unused_parameter (decl);
+diff -ur gcc-3.4.6-clean/gcc/toplev.c gcc-3.4.6-cdepn/gcc/toplev.c
+--- gcc-3.4.6-clean/gcc/toplev.c	2005-11-09 09:51:51.000000000 +0200
++++ gcc-3.4.6-cdepn/gcc/toplev.c	2006-06-21 20:34:04.000000000 +0300
+@@ -4675,6 +4675,52 @@
+   timevar_print (stderr);
+ }
+ 
++/*
++ * codeviz: Open the cdepn file. This is called with a filename by main()
++ * and with just NULL for every other instance to return just the handle
++ */
++FILE *g_fnref_f = NULL;
++char cdepnfile[256] = "--wonthappen--";
++
++FILE *cdepn_open(char *filename) {
++  struct stat cdepnstat;
++  int errval;
++  time_t currtime;
++  if (filename && g_fnref_f == NULL) {
++    strcpy(cdepnfile, filename);
++    strcat(cdepnfile, ".cdepn");
++
++    /*
++     * Decide whether to open write or append. There appears to be a weird
++     * bug that decides to open the file twice, overwriting all the cdepn
++     * information put there before
++     */
++    errval = stat(cdepnfile, &cdepnstat); 
++    currtime = time(NULL);
++    if (errval == -1 || currtime - cdepnstat.st_mtime > 5)  {
++      g_fnref_f = fopen(cdepnfile, "w");
++      fprintf(stderr, "opened dep file %s\n",cdepnfile);
++    } else {
++      g_fnref_f = fopen(cdepnfile, "a");
++      fprintf(stderr, "append dep file %s\n",cdepnfile);
++    }
++
++    fflush(stderr);
++  }
++
++  return g_fnref_f;
++}
++
++void cdepn_close(void) {
++  if (g_fnref_f) fclose(g_fnref_f);
++  g_fnref_f = NULL;
++}
++
++int cdepn_checkprint(void *fncheck) {
++  return 1;
++  /*return (void *)fncheck == (void *)decl_name; */
++}
++
+ /* Entry point of cc1, cc1plus, jc1, f771, etc.
+    Exit code is FATAL_EXIT_CODE if can't open files or if there were
+    any errors, or SUCCESS_EXIT_CODE if compilation succeeded.
+@@ -4696,8 +4742,11 @@
+   randomize ();
+ 
+   /* Exit early if we can (e.g. -help).  */
+-  if (!exit_after_options)
++  if (!exit_after_options) {
++    cdepn_open(main_input_filename);
+     do_compile ();
++    cdepn_close();
++  }
+ 
+   if (errorcount || sorrycount)
+     return (FATAL_EXIT_CODE);
+diff -ur gcc-3.4.6-clean/gcc/tree.h gcc-3.4.6-cdepn/gcc/tree.h
+--- gcc-3.4.6-clean/gcc/tree.h	2005-01-16 18:01:28.000000000 +0200
++++ gcc-3.4.6-cdepn/gcc/tree.h	2006-06-21 20:34:04.000000000 +0300
+@@ -3115,4 +3115,11 @@
+ extern int tree_node_counts[];
+ extern int tree_node_sizes[];
+     
++/*
++ * CodeViz functions to get the output file handle for cdepn files
++ */
++FILE *cdepn_open(char *filename);
++void cdepn_close(void);
++int  cdepn_checkprint(void *fncheck);
++
+ #endif  /* GCC_TREE_H  */

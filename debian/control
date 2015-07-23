@@ -1,0 +1,11 @@
+Source: codeviz
+Section: devel
+Priority: optional
+Maintainer: Mel Gorman <mel@csn.ul.ie>
+Standards-Version: 3.5.8
+Build-Depends: debmake
+
+Package: codeviz
+Architecture: any
+Depends: graphviz (>= 1.10.0)
+Description: CodeViz tool basic package

@@ -1,0 +1,17 @@
+digraph fullgraph {
+node [ fontname=Helvetica, fontsize=12 ];
+"processStream" [label="processStream\nlib.c:14:"];
+"manipulateStream" [label="manipulateStream\nlib.c:18:"];
+"_processStream" [label="_processStream\nlib.c:5:"];
+"main" [label="main\nmain.c:7:"];
+"_processStream" -> "printf" [label="lib.c:6"];
+"_processStream" -> "_processStream" [label="lib.c:9"];
+"processStream" -> "_processStream" [label="lib.c:15"];
+"manipulateStream" -> "printf" [label="lib.c:19"];
+"main" -> "printf" [label="main.c:15 main.c:10"];
+"main" -> "malloc" [label="main.c:13"];
+"main" -> "exit" [label="main.c:30 main.c:16"];
+"main" -> "processStream" [label="main.c:25"];
+"main" -> "manipulateStream" [label="main.c:26"];
+"main" -> "free" [label="main.c:29"];
+}

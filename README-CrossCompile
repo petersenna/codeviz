@@ -1,0 +1,22 @@
+GCC 3.3.2 notes
+---------------
+
+The patch gcc-3.3.2-cdepn.diff is basically just an adjustment of the
+gcc-3.2.3-cdepn.diff patch.
+
+I only try it against Debian gcc-3.3 (presently gcc-3.3_3.3.2ds5-4) dpkg sources
+(+ patches applied) on an hppa platform.
+
+To obtain a 'temporary' gcc hppa cross-compiler (enough to compile linux
+kernel):
+- apply the patch in the gcc src tree: patch -p1 -i gcc-3.3.2-cdepn.diff;
+- configure gcc (in the build/gcc dir): sources/gcc/configure \
+  --target=hppa-linux --host=hppa-linux --build=hppa-linux \
+  --prefix=/opt/palinux-cdvis --disable-shared --disable-nls \
+  --enable-sjlj-exceptions --disable-threads --enable-languages=c 
+(to obtain a 64bit compiler just replace the 'target' hppa-linux by hpp64-linux)
+- make
+- make install (will put gcc into /opt/palinux-cdvis/bin)
+
+-- 
+Joel Soete

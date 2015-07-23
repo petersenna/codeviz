@@ -1,0 +1,162 @@
+#!/bin/bash
+#
+# configure
+#
+# This is the configure script for CodeViz to compile a patched gcc and install
+# the scripts. It is meant to behave similar to ordinary configure scripts
+
+PREFIX=/usr/local
+GCCVERSION=4.6.2
+GCCGRAPH=-unset-
+
+# Print program usage
+usage() {
+  echo "Usage: configure [OPTION] [VAR=VALUE]"
+  echo
+  echo "Configuration:"
+  echo "  -h, --help	    display this help and exit"
+  echo "  --prefix=PREFIX   install architecture-independent files in PREFIX"
+  echo "                    [Default: /usr/local]"
+  echo "  --gcc=VERSION     version of gcc to use: 4.6.2 only available"
+  echo "                    [Default: 4.6.2]"
+  echo "  --gccgraph=PATH   install patched gcc to this path"
+  echo "                    [Default: $HOME/gccgraph]"
+  echo "  --perllib=PATH    Where to install the perl libraries"
+  echo "                    [Default: auto-detected]"
+  echo
+
+  echo Make options are
+  echo "all             Compile a patched version of gcc"
+  echo "install         Install all scripts and patched version of gcc"
+  echo "install-gcconly Install only the patched version of gcc"
+  echo "install-codeviz Install only the codeviz scripts"
+  echo
+  exit
+}
+
+# Function to check a program is in the path
+checkprog() {
+  PROG=$1
+  PACKAGE=$2
+  echo -n checking for $PROG...
+
+  TEST=`which $PROG`
+  if [ "$TEST" != "" ]; then 
+    echo $TEST; 
+  else
+    echo not found
+    echo FATAL: The program $PROG was not in your path. This is probably available for your distribution
+    echo "       with the $PACKAGE package. Install this before running configure again"
+    echo
+    exit
+  fi
+  
+}
+
+# Parse command line arguements
+eval set -- "$@"
+while true ; do
+  if [ "$1" == "" ]; then break; fi 
+
+  PARAM=`echo $1 | awk -F = '{print $1}'`
+  case "$PARAM" in
+    -h|--help)	    	usage;;
+    --prefix)		export PREFIX=`echo $1 | awk -F = '{print $2}'`
+    		       	shift;;
+    --gcc)              export GCCVERSION=`echo $1 | awk -F = '{print $2}'`
+                        shift;;
+    --gccgraph) 	export GCCGRAPH=`echo $1 | awk -F = '{print $2}'`
+    			shift;;
+
+    --perllib)	 	export PERLLIB=`echo $1 | awk -F = '{print $2}'`
+    			shift;;
+    *)		  echo "Unknown option: \"$1\""; echo; usage;;
+  esac
+done
+
+# Make sure prefix is valid
+if [ ! -d $PREFIX ]; then
+  echo An invalid prefix \($PREFIX\) was specified
+  exit
+fi
+
+# Check gccgraph is going somewhere
+if [ "$GCCGRAPH" = "-unset-" ]; then
+  GCCGRAPH=$PREFIX/gccgraph
+fi
+
+# Check required programs are available
+checkprog dot graphviz
+checkprog make make
+checkprog gcc gcc
+
+# Check that dot can generate graphs
+TEMP=`mktemp 2> /dev/null`
+TEMPERR=`mktemp 2> /dev/null`
+if [ "$TEMP" = "" ]; then
+  TEMP=`mktemp -t /tmp 2> /dev/null`
+  TEMPERR=`mktemp -t /tmp 2> /dev/null`
+fi
+echo -n checking dot can generate graphs...
+echo 'digraph testgraph { node [ fontname=Helvetica, fontsize=12 ]; a->b; }' | dot -Tps > $TEMP 2> $TEMPERR
+TEST=`head -1 $TEMP | grep "%!"`
+if [ "$TEST" = "" ]; then
+  echo no
+  echo FATAL: dot does not appear to be able to generate graphs
+  rm $TEMP
+  rm $TMEPERR
+  exit
+fi
+echo yes
+
+# Get the perl library installation path
+echo -n checking perl library path...
+if [ "$PERLLIB" = "" ]; then
+  for i in `perl -X -e 'foreach $INC (@INC) { print "$INC\n" }' 2> /dev/null`; do
+    TEST=`echo $i | grep $PREFIX`
+    if [ "$TEST" != "" ]; then
+      export PERLLIB=$TEST
+      break
+    fi
+  done
+  
+  if [ "$PERLLIB" = "" ]; then
+      export PERLLIB=$PREFIX/lib
+  fi
+fi
+echo $PERLLIB
+
+# Create the toplevel Makefile
+echo Creating Makefile
+PREFIX_ESCAPED=`echo $PREFIX | sed -e 's/\//\\\\\//g'`
+GCCGRAPH_ESCAPED=`echo $GCCGRAPH | sed -e 's/\//\\\\\//g'`
+PERLLIB_ESCAPED=`echo $PERLLIB | sed -e 's/\//\\\\\//g'`
+TOPLEVEL_ESCAPED=`pwd | sed -e 's/\//\\\\\//g'`
+cat Makefile.in | \
+	sed -e s/@@PREFIX@@/$PREFIX_ESCAPED/g | \
+	sed -e s/@@GCCVERSION@@/$GCCVERSION/g | \
+	sed -e s/@@PERLLIB@@/$PERLLIB_ESCAPED/g | \
+	sed -e s/@@TOPLEVEL@@/$TOPLEVEL_ESCAPED/g | \
+	sed -e s/@@GCCGRAPH@@/$GCCGRAPH_ESCAPED/g > Makefile
+
+echo Creating testsuite/c/Makefile
+cat testsuite/c/Makefile.in | \
+	sed -e s/@@GCCGRAPH@@/$GCCGRAPH_ESCAPED\\/bin\\/gcc/g > testsuite/c/Makefile
+
+echo
+echo Configured. Running \"make\" will compile a patched version of gcc suitable
+echo for use with codeviz. Running \"make install\" when it completes will install
+echo the patched version of gcc to $GCCPATCH and the other codeviz scripts under
+echo $PREFIX. When compiling other programs for use with codeviz, make sure you
+echo use the patched version of gcc. For example, to build a project based on C,
+echo the following should work\;
+echo
+echo make CC=$GCCPATCH/bin/gcc
+echo
+echo Configuration:
+echo "   PREFIX = $PREFIX"
+echo "   GCC version to patch = $GCCVERSION"
+echo "   Patched GCC install path = $GCCGRAPH"
+echo
+
+

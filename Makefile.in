@@ -1,0 +1,42 @@
+TOPLEVEL = @@TOPLEVEL@@
+PREFIX = @@PREFIX@@
+GCCVERSION = @@GCCVERSION@@
+PERLLIB = @@PERLLIB@@
+GCCGRAPH = @@GCCGRAPH@@
+CDEPN_SUPPRESS = yes
+export CDEPN_SUPPRESS
+
+all:
+	cd $(TOPLEVEL)/compilers; \
+	./install_gcc-$(GCCVERSION).sh $(GCCGRAPH) compile-only
+
+clean:
+	rm -rf $(TOPLEVEL)/compilers/gcc-graph/*
+
+install: install-gcconly install-codeviz
+	@echo ""
+	@echo "*** CodeViz is now installed to $(PERFIX) and testsuites passed ***"
+	@echo "Patched gcc is installed to $(GCCGRAPH). To compile a project"
+	@echo "for use with CodeViz, genearlly the following will work"
+	@echo ""
+	@echo "make CC=$(GCCGRAPH)/bin/gcc or g++"
+	@echo ""
+	@echo "To generate a full.graph file for C, use"
+	@echo ""
+	@echo "genfull"
+	@echo ""
+	@echo "For C++, make sure you use the cppdepn method with"
+	@echo ""
+	@echo "genfull -g cppdepn"
+	@echo ""
+	@echo "or the results will not be what you expect."
+	@echo ""
+
+install-gcconly:
+	cd $(TOPLEVEL)/compilers/gcc-graph/objdir && make install $(GCCEXTRA_INSTALL)
+
+install-codeviz:
+	mkdir -p $(DESTDIR)$(PREFIX)/bin
+	cp $(TOPLEVEL)/bin/* $(DESTDIR)$(PREFIX)/bin
+	mkdir -p $(DESTDIR)$(PERLLIB)
+	cp -rv lib/CodeViz $(DESTDIR)$(PERLLIB)

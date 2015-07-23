@@ -1,0 +1,204 @@
+diff -pruN gcc-4.6.2-clean/gcc/cgraph.c gcc-4.6.2-cdepn/gcc/cgraph.c
+--- gcc-4.6.2-clean/gcc/cgraph.c	2011-06-06 14:16:35.000000000 -0300
++++ gcc-4.6.2-cdepn/gcc/cgraph.c	2012-05-19 19:04:03.470561109 -0300
+@@ -990,7 +990,8 @@ initialize_inline_failed (struct cgraph_
+ 
+ static struct cgraph_edge *
+ cgraph_create_edge_1 (struct cgraph_node *caller, struct cgraph_node *callee,
+-		       gimple call_stmt, gcov_type count, int freq, int nest)
++		       gimple call_stmt, gcov_type count, int freq,
++		       int nest, location_t call_location)
+ {
+   struct cgraph_edge *edge;
+ 
+@@ -1043,6 +1044,7 @@ cgraph_create_edge_1 (struct cgraph_node
+ 
+   edge->indirect_info = NULL;
+   edge->indirect_inlining_edge = 0;
++  edge->call_location = call_location;
+ 
+   return edge;
+ }
+@@ -1054,7 +1056,8 @@ cgraph_create_edge (struct cgraph_node *
+ 		    gimple call_stmt, gcov_type count, int freq, int nest)
+ {
+   struct cgraph_edge *edge = cgraph_create_edge_1 (caller, callee, call_stmt,
+-						   count, freq, nest);
++						   count, freq,
++						   nest, input_location);
+ 
+   edge->indirect_unknown_callee = 0;
+   initialize_inline_failed (edge);
+@@ -1093,7 +1096,8 @@ cgraph_create_indirect_edge (struct cgra
+ 			     gcov_type count, int freq, int nest)
+ {
+   struct cgraph_edge *edge = cgraph_create_edge_1 (caller, NULL, call_stmt,
+-						   count, freq, nest);
++						   count, freq,
++						   nest, input_location);
+ 
+   edge->indirect_unknown_callee = 1;
+   initialize_inline_failed (edge);
+diff -pruN gcc-4.6.2-clean/gcc/cgraph.h gcc-4.6.2-cdepn/gcc/cgraph.h
+--- gcc-4.6.2-clean/gcc/cgraph.h	2011-03-04 15:49:23.000000000 -0300
++++ gcc-4.6.2-cdepn/gcc/cgraph.h	2012-05-19 19:04:03.338557458 -0300
+@@ -443,6 +443,9 @@ struct GTY((chain_next ("%h.next_caller"
+   unsigned int call_stmt_cannot_inline_p : 1;
+   /* Can this call throw externally?  */
+   unsigned int can_throw_external : 1;
++
++  /* CodeViz: Location the call occurred at */
++  location_t call_location;
+ };
+ 
+ #define CGRAPH_FREQ_BASE 1000
+diff -pruN gcc-4.6.2-clean/gcc/cgraphunit.c gcc-4.6.2-cdepn/gcc/cgraphunit.c
+--- gcc-4.6.2-clean/gcc/cgraphunit.c	2011-03-11 10:27:26.000000000 -0300
++++ gcc-4.6.2-cdepn/gcc/cgraphunit.c	2012-05-19 19:04:03.070550009 -0300
+@@ -772,12 +772,17 @@ cgraph_output_pending_asms (void)
+   cgraph_asm_nodes = NULL;
+ }
+ 
++extern int cdepn_dump;
+ /* Analyze the function scheduled to be output.  */
+ static void
+ cgraph_analyze_function (struct cgraph_node *node)
+ {
+   tree save = current_function_decl;
+   tree decl = node->decl;
++  tree thisTree, calleeTree;
++  FILE *fnref_f;
++  struct cgraph_edge *calleeEdge;
++  expanded_location xloc;
+ 
+   current_function_decl = decl;
+   push_cfun (DECL_STRUCT_FUNCTION (decl));
+@@ -802,10 +807,39 @@ cgraph_analyze_function (struct cgraph_n
+ 
+   pop_cfun ();
+   current_function_decl = save;
++
++  if (cdepn_dump) {
++    /* CodeViz: Output information on this node */
++    thisTree = node->decl;
++    if ((fnref_f = cdepn_open(NULL)))
++      {
++        fprintf(fnref_f,"F {%s} {%s:%d}\n",
++	    lang_hooks.decl_printable_name (thisTree, 2),
++	    DECL_SOURCE_FILE (thisTree), DECL_SOURCE_LINE (thisTree));
++
++      }
++
++    /* CodeViz: Output information on all functions this node calls */
++    for (calleeEdge = node->callees; calleeEdge;
++	 calleeEdge = calleeEdge->next_callee)  {
++      calleeTree = calleeEdge->callee->decl;
++      if (thisTree != NULL &&
++	  calleeTree != NULL &&
++	  (fnref_f = cdepn_open(NULL)) != NULL)
++	{
++	  xloc = expand_location(calleeEdge->call_location);
++	  fprintf(fnref_f, "C {%s} {%s:%d} {%s}\n",
++	      lang_hooks.decl_printable_name (thisTree, 2),
++	      xloc.file, xloc.line,
++	      lang_hooks.decl_printable_name (calleeTree, 2));
++	}
++      else
++	printf("CODEVIZ: Unexpected NULL encountered\n");
++    }
++  }
+ }
+ 
+ /* Process attributes common for vars and functions.  */
+-
+ static void
+ process_common_attributes (tree decl)
+ {
+diff -pruN gcc-4.6.2-clean/gcc/toplev.c gcc-4.6.2-cdepn/gcc/toplev.c
+--- gcc-4.6.2-clean/gcc/toplev.c	2011-02-03 06:29:03.000000000 -0200
++++ gcc-4.6.2-cdepn/gcc/toplev.c	2012-05-19 19:04:03.070550009 -0300
+@@ -1907,6 +1907,53 @@ do_compile (void)
+   timevar_print (stderr);
+ }
+ 
++/*
++ * codeviz: Open the cdepn file. This is called with a filename by main()
++ * and with just NULL for every other instance to return just the handle
++ */
++FILE *g_fnref_f = NULL;
++char cdepnfile[256] = "--wonthappen--";
++int cdepn_dump = 0;
++
++FILE *cdepn_open(char *filename) {
++  struct stat cdepnstat;
++  int errval;
++  time_t currtime;
++  if (filename && g_fnref_f == NULL) {
++    strcpy(cdepnfile, filename);
++    strcat(cdepnfile, ".cdepn");
++
++    /*
++     * Decide whether to open write or append. There appears to be a weird
++     * bug that decides to open the file twice, overwriting all the cdepn
++     * information put there before
++     */
++    errval = stat(cdepnfile, &cdepnstat); 
++    currtime = time(NULL);
++    if (errval == -1 || currtime - cdepnstat.st_mtime > 5)  {
++      g_fnref_f = fopen(cdepnfile, "w");
++      fprintf(stderr, "opened dep file %s\n",cdepnfile);
++    } else {
++      g_fnref_f = fopen(cdepnfile, "a");
++      fprintf(stderr, "append dep file %s\n",cdepnfile);
++    }
++
++    fflush(stderr);
++  }
++
++  return g_fnref_f;
++}
++
++void cdepn_close(void) {
++  if (g_fnref_f) fclose(g_fnref_f);
++  g_fnref_f = NULL;
++}
++
++int cdepn_checkprint(void *fncheck) {
++  return 1;
++  /*return (void *)fncheck == (void *)decl_name; */
++}
++
+ /* Entry point of cc1, cc1plus, jc1, f771, etc.
+    Exit code is FATAL_EXIT_CODE if can't open files or if there were
+    any errors, or SUCCESS_EXIT_CODE if compilation succeeded.
+@@ -1959,8 +2006,14 @@ toplev_main (int argc, char **argv)
+     print_plugins_help (stderr, "");
+ 
+   /* Exit early if we can (e.g. -help).  */
+-  if (!exit_after_options)
++  if (!exit_after_options) {
++    cdepn_dump = ((getenv("CDEPN_SUPPRESS")) ? 0 : 1);
++    if (cdepn_dump)
++       cdepn_open(main_input_filename);
+     do_compile ();
++    if (cdepn_dump)
++       cdepn_close();
++  }
+ 
+   if (warningcount || errorcount)
+     print_ignored_options ();
+diff -pruN gcc-4.6.2-clean/gcc/tree.h gcc-4.6.2-cdepn/gcc/tree.h
+--- gcc-4.6.2-clean/gcc/tree.h	2011-10-06 16:57:52.000000000 -0300
++++ gcc-4.6.2-cdepn/gcc/tree.h	2012-05-19 19:04:03.594564570 -0300
+@@ -5724,4 +5724,11 @@ is_lang_specific (tree t)
+ /* In gimple-low.c.  */
+ extern bool block_may_fallthru (const_tree);
+ 
++/*
++ * CodeViz functions to get the output file handle for cdepn files
++ */
++FILE *cdepn_open(char *filename);
++void cdepn_close(void);
++int  cdepn_checkprint(void *fncheck);
++
+ #endif  /* GCC_TREE_H  */

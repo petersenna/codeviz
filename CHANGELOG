@@ -1,0 +1,180 @@
+Changelog
+---------
+Version 1.0.12
+ o Fix typos in document (Jim Cathey)
+ o Fix up C++ Mangling (Andrey Valyaev)
+ o Delete vim swap files (Petr Cerny)
+ o Handle DESTDIR as an alternative installation root than / (Petr Cerny)
+ o gcc 4.6.2 (Rafael Aquini)
+
+Version 1.0.11
+ o Update the cncc collection method to understand ncc 2.4 (Tim Auckland)
+ o Add --output-layout to alter what direction the graph is
+   plotted in (Tim Auckland)
+ o Add --no-extern switch to remove functions that are
+   referenced but not defined in the source such as library calls (Tim Auckland)
+
+Version 1.0.10
+ o Updated compiler version (Michael Iatrou did all this work)
+ o Added basic test suite to regress test.
+
+Version 1.0.7
+ o Fixed an assumption that C++ functions always had return types (kost)
+ o Workaround a bug where const functions cause trouble (kost)
+ o Fix bugs related to C++ functions and spaces (kost)
+ o Updated the list of kernel functions to ignore for -t (mel)
+ o Added support for outputting PNG files (mel)
+
+Version 1.0.6
+ o Regression fixed where nodes were not being decorated correctly
+
+Version 1.0.5
+ o Minor issue when generating graphs of exactly one node fixed
+
+Version 1.0.4
+ o More bugs in gcc patch, fixed now and tested
+ o --all-locs bug fixed
+ o Graph traversal bug introduced in 1.0.1 for C fixed
+
+Version 1.0.3
+ o Bug in gcc patch
+
+Version 1.0.2
+ o Ditched support for multiple compilers, left with only 3.4.1
+ o Vastly superior C++ support, multiple bugs fixed
+
+Version 1.0.1
+ o Support for gcc 3.3.2 removed, way too buggy
+ o Error in gcc 3.2.3 installation script fixed up
+ o Support for --font switch to specify what font to use for graphs
+ o Support again available for HTML generation and --shighlight
+
+Version 1.0
+ o Final bit of macro recognition tweaking
+
+Version 0.99
+ o Be consistent about the use of cdep or cdepn
+ o Better header processing
+ o Addition of configure script
+
+Version 0.24
+ o Added support for a --version switch
+
+Version 0.23
+ o Remove CPP support in the cxref method, it was just too delicate
+ o Changed the C++ method for cdepn methods to use use cdep files, works well
+ o CObjDump will now put " around labels with ::
+
+Version 0.21
+ o Added missing file
+ 
+Version 0.20
+ o Fixed bug with --plain usage
+ o Fixed bug with SMP function name mangling with later 2.6 kernels
+ o Calculate cumulative stack usage with --pp-cstack post-processing module
+
+Version 0.19
+ o Mainly code cleanups
+ o Moved graph rendering to Output.pm that exports just renderGraph()
+ o Moved printing functions to Format.pm
+ o Moved IPC functions to IPC.pm
+ o Moved remaining graph functions to Graph.pm
+ o Fixed cobjdump for binary analysis
+ o Added post-processing analysis to genfull to calculate stack usage
+ o Display stack usage and highlight excessive use for gengraph
+
+Version 0.18
+ o Allow output of just the graph file without using dot
+ o Support for templated base URLs for HTML image maps
+ o Better support for source-highlight usages
+ o Allow standard error to be redirected (useful to daemon mode)
+ o Allow standard out to be redirected (useful to daemon mode)
+
+Version 0.17
+ o Major bug fixed that prevented genfull running
+ o Support for gcc 3.3.2 (Joel Soete)
+ o Cross-compile instructions (Joel Soete)
+ 
+Version 0.16
+ o Many bug fixes and cleanups related to the HTML rendering
+ o Better handling of node attributes for code cleanup
+ o Many code cleanups to reduce complexity, overall less code
+ o Documentation updates
+
+Version 0.15
+ o Show location of a function call (--all-locs) (Mel)
+ o Graph top-level functions based on regular expressions (Lehr + Mel)
+ o Various web-page related options added (Lehr + Mel)
+ 
+Version 0.14
+ o More minor bugs
+ o Support to show/ignore functions based on a regular expression (Lehr)
+ o Add RPM spec file (Lehr)
+ o Format nodes that are not traversed differently (Lehr)
+
+Version 0.13
+ o Bugfixes 
+
+Version 0.12
+ o Graphs are now internally represented as DAGs, massive speedups
+ o graph2vrml removed because it was not going anywhere useful
+ o Daemon/Client support added
+ o GIF support added for web pages
+ o Proper checking for availablity of dot
+ o Various optimizations and speedups
+
+Version 0.11
+ o cdep and cxref methods merged
+ o cdep method is MUCH more accurate and is able to determine files to ignore
+ o Output printing module added, only cdep uses it currently
+
+Version 0.10
+ o Avoid naming collisions where structure names match functions in cxrefdep
+ o Improved name collision resolution
+ o ncc support added for new method cncc which supports function pointers
+
+Version 0.9
+ o xref support added which understands macros
+ o Minor bug fixes and cleanups
+
+Version 0.8
+ o Modular data collection so that many collection methods can be easily added
+   All collection methods are now perl libraries
+ o C++ support added
+ o Integrated all scripts together so that there is only two principal scripts
+ o objdump support so that project does not depend on patched compiled
+ o Patches to gcc updated to gcc-3.0.4
+ o Patches added for gcc-2.95.3 and gcc-3.2.3
+ o glibc workaround added for new version of glib compiling gcc
+ o Automated download, compile and patch scripts added for each compiler version
+
+Version 0.7
+ o Reverse Call Graph Support
+ o Online man pages and documentation help
+ 
+Version 0.5
+ o Fix up case where graphs with similar function names sometimes get
+   corrupt. Most time it would work out ok, but other times multiple edges or
+   unrelated functions were displayed
+
+ o Enforce that the call graph order matches the order in code perfectly. It
+   was a very rare case that a depth first search of the call graph would give
+   a misleading view of the code
+
+ o Allow multiple functions to be specified to graph. This is really handy
+   when a number of API functions map to a much smaller set and it is desirable
+   to display all the API wrappers in one place
+ 
+ o Small documentation fix
+
+Version 0.4
+
+ o The order of functions displayed is now in the same order as the source.
+   Traversing the graph in depth-first search will be the same order in the
+   code
+
+Version 0.3
+
+o Fixed cdepn.pl to work with 2.5.x kernels
+
+

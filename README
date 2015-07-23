@@ -1,0 +1,337 @@
+README
+------
+
+This is the README for the CodeViz set of scripts. The tools are for
+the creation of call graphs for C and C++ so that function flow can be
+visualised. They are licensed under the GPL, see the COPYING file for details.
+
+Introduction
+------------
+
+At some stage in everyone's programming career, they will need to read through
+a lot of code written by another programmer. An important part of program
+comprehension is building a picture of how the program is structured from
+a high-level view and call graphs can be an invaluable aid when building
+this piecture. This is particularly useful if the original programmer uses
+clear function names. 
+
+This project provides the ability to generate call graphs to aid the task of
+understanding code. It uses a highly modular set of collection methods and
+can be adapted to support any language although only C and C++ are currently
+supported. Each collection method has different advantages and disadvantages.
+
+Installing 
+----------
+
+cd codeviz
+cp ./lib/* -rv /usr/lib/   (Or your preferred perl library path)
+cp ./bin/* /usr/local/bin
+
+Alternatively just run the scripts directly from the package bin/ directory
+as the libraries can be found as long as the libs are installed in a global
+perl directory or at the lib/ directory is the same level as bin/.
+
+The graphs are rendered using dot which is part of the GraphViz project.
+Install the package for your distribution or obtain it directly from
+http://www.graphviz.org
+
+Scripts
+-------
+
+genfull - Use this to generate the full call graph for a project. This will
+	be quite large and probably should be pared down with gengraph. A
+	number of collection methods are available but cdepn is the
+	default. Run genfull --man to get a full man page. Do not bother
+	putting the output full.graph through dot yourself as it is unlikely
+	to be rendered within a reasonable amount of time
+
+gengraph - This will generate a small subgraph and postscript file for a
+	given set of functions. Run gengraph --man for full details
+
+Generating cdepn Files for genfull
+----------------------------------
+
+If the full.graph for the source you are interested in have already been
+created, you can skip this section. See ./graphs to see if a full.graph
+is available.
+
+The cobjdump and cppobjdump (for C and C++ respectively) will generate
+adequate call graphs but the information is a bit lacking. For example,
+the source file of a function declaration is unknown and macros and inline
+functions will be totally missing. Ideally, the cdepn method should be used
+but it requires a patched version of gcc and g++ to work. The patches and
+some scripts are available in the compilers/ directory.
+
+The patched version of gcc and g++ outputs .cdepn files for every c and c++
+file compiled. This .cdepn file contains information such as when functions
+are called, where they are declared and so on. Earlier versions of CodeViz
+supported multiple gcc versions but this one only support 4.6.2.
+
+First, the source tar has to be downloaded.  For those who have better things
+to do than read the gcc install doc, just do the following
+
+cd compilers
+ncftpget ftp://ftp.gnu.org/pub/gnu/gcc/gcc-4.6.2/gcc-4.6.2.tar.gz
+./install_gcc-4.6.2.sh <optional install path>
+
+This script will untar gcc, patch it and install it to the supplied path. If
+no path is given, it'll be installed to $HOME/gcc-graph . I usually install
+it to /usr/local/gcc-graph with
+
+./install_gcc-4.6.2.sh /usr/local/gcc-graph
+
+If you seriously want to patch by hand, just read the script as it goes through
+each of the steps one at a time. There is one step to note though.
+
+For now, we will presume a patched version of gcc and g++ is now in
+$HOME/gcc-graph/.  Most projects will use the variable CC for deciding
+which version of gcc to use. The handiest way to use the patched one is with
+something like
+
+make CC=$HOME/gcc-graph/bin/gcc CXX=$HOME/gcc-graph/bin/g++
+
+Or alternatively, adjust your path that gcc-graph will appear before the
+normal gcc. As each source file is compiled, the corresponding cdepn file
+will be created.
+
+In the case of building the Linux Kernel, the commands would be;
+
+make CC=$HOME/gcc-graph/bin/gcc bzImage
+make CC=$HOME/gcc-graph/bin/gcc modules
+
+Similar methods will work for other projects presuming that the Makefile
+uses the CC or CXX macros correctly to indicate the compiler to use. If it's
+a Makefile of your own type or it does not use proper macros, you may have
+to edit the Makefile yourself or else adjust your path to put gcc-graph first.
+For example, with bash, the following will work.
+
+PATH=$HOME/gcc-graph/bin:$PATH
+
+When building, watch the compiler output to make sure the .cdepn files are being
+created.
+
+Generating nccout files for genfull
+-----------------------------------
+
+An alternative to using a patched version of gcc is to use ncc
+(http://freshmeat.net/projects/ncc) which is a C compiler specifically
+designed for code browsing. It comes with it's own navigation tool and
+is well worth checking out.
+
+CodeViz supports ncc with the cncc collection method (just like cdepn is for
+use with gcc) and supports C only. The really big thing going for the ncc
+collection method is that it can traverse function pointers. If you download
+and install ncc, use the cncc collection method if it is C code and function
+pointers are common.
+
+Once ncc is installed, in the case of building the Linux Kernel, the commands would be:
+
+make -i CC='ncc -ncoo -ncfabs' bzImage
+make -i CC='ncc -ncoo -ncfabs' modules
+find . -name \*.nccout | xargs cat > code.map.nccout
+
+Generating full.graph 
+---------------------
+
+Some full.graph files are provided with the tar in the downloads section. If
+one you want is not available, read on.
+
+To create a full.graph, the script genfull is used. run genfull --help to see
+all options but the easiest thing to do is run the script with no arguments
+in the top level source directory after a compile and a file full.graph will
+be created in the top level source directory. 
+
+While it should be possible to put full.graph though dot and see the postscript
+file, it is recommended you do not try. A full graph is extremely large and
+unlikely to be rendered in a reasonable amount of time. One really should
+use the gengraph program to create smaller graphs.
+
+Problems that might exist with full.graph
+-----------------------------------------
+
+In more complex code, the full.graph may not be perfect. For example, there may
+be naming collisions where there is duplicate function names between modules or
+if there is multiple binaries being compiled, genfull will not distinguish
+between them. If you think this will be a problem, there is two steps you can
+make.
+
+First, compare the graph generated by cdepn with the one generated by
+cobjdump. As cobjdump is analysing a binary, it is highly unlikely the graph
+is wrong, it just will have no information on inline functions or macros. With
+the linux kernel, this test would look something like
+
+genfull -g cobjdump -o full.graph-objdump
+genfull -g cdepn -o full.graph-cdepn
+gengraph -t -d 5 -g full.graph-objdump  -f kswapd -o kswapd-objdump.ps
+gengraph -t -d 5 -g full.graph-cdepn -f kswapd -o kswapd-cdepn.ps
+
+This would generate two full.graphs and two call graphs of the function
+kswapd() which could be compared to make sure the cdepn graph is accurate. A
+similar method can be used for other projects.
+
+The second problem that may occur is where function names are duplicated
+between modules. In this case, the best course of action is to use the -s
+switch to genfull to limit which branches of the tree are examined. For
+example, in the linux kernel there is an alloc_pages() function in mm/ and
+drivers/char/drm . If one was examining the VM alone and naming collisions were
+expected to be a problem, genfull could be invoked as
+
+genfull -s "mm include/linux drivers/block arch/i386"
+
+which would cover most of the functions of interest. In other projects, it will
+be a case of different libraries colliding with each other. For instance, with
+avifile, genfull with no arguments will create a horrible mess. Instead, the
+-s switch must be used to generate a full.graph for each part of the project.
+For example, the player would be graphed with
+
+genfull -s "player" -o full.graph-player
+
+and each of the libraries would be graphed separately.
+
+Generating Call Graphs 
+----------------------
+
+The script gengraph generates a call graph for a specified function based on
+the full.graph file. gengraph --man will provide all the information you need.
+The most important switch to note is -g which determines what collection method
+to use. Once the script completes, a postscript file will be available which
+can be viewed with any postscript viewer. By default, the output filename will
+be functionname.ps
+
+If it takes a long time to generate a graph, it is usually a good idea to first
+limit it's depth to something reasonable with -d . We'll take an example of
+graphing alloc_pages() with kernel 2.4.20
+
+Step 1: gengraph -f alloc_pages
+Result: Taking way too long, hit ctrl-c and limited by some reasonable depth to
+get an idea of what was happening
+
+Step 2: gengraph -d 10 -f alloc_pages
+Result: Output graph is massive, mainly with kernel stock functions of no
+interest. Use the -t switch to omit functions that are usually of no interest.
+For other projects, edit the gengraph script and go to the line "sub
+generate_trimlist", this function has a list of functions to "trim" with the -t
+switch is used
+
+Step 3: gengraph -t -d 10 -f alloc_pages
+Result: Output graph is still massive but a glance at the graph shows that a
+call to "shrink_cache()" is resulting in a massive graph below it that does not
+look like it is directly related to page allocation. Lets just show that
+function but not traverse it with the -s switch
+
+Step 4: gengraph -t -d 10 -s "shrink_cache" -f alloc_pages
+Result: Graph size is drastically reduced. Most of the remaining graph
+involves two functions "try_to_free_pages_zone()" and "__free_pages_ok". We'll
+not traverse try_to_free_pages_zone() and will ignore __free_pages_ok()
+altogether with the -i switch
+
+Step 5: gengraph -t -d 10 -s "shrink_cache try_to_free_pages_zone" -i
+"__free_pages_ok" -f alloc_pages
+Result: Perfect, shows a nice graph which clearly shows what the important
+functions are in relation to just page allocation. Later the branches that were
+not traversed in this graph can be graphed separately
+
+The bottom line is that the first graph is usually too large and needs to be
+cut down. How to pare it down in a combination of experience with the code
+and common sense. I find it usually helps to just limit the depth first by
+4 and start ignoring functions that are obviously not of current interest
+and traverse them later
+
+Generating Graphs based on Regular Expressions
+----------------------------------------------
+
+Support is available for selecting functions to graph, show and ignore based
+on regular expressions. The format of the expression is the same as perl 
+except without the //'s. For example, to generate a graph that d
+that look like an alloc function in the kernel, this would work
+
+gengraph -t -d 4 --func-re "^.?.?alloc(_page)?$" -i "pmd_alloc" -o allocs.ps
+
+Note that with --func-re in particular, it is important that you use the -o
+switch or dot will fail to create a graph with complaints about bad output
+filenames.
+
+Post-Processing Options
+-----------------------
+
+Both genfull and gengraph support the use of post-procesing steps. Currently,
+two are supported. The first is stack usage by a single function.  This is x86
+specific as it depends on object files regardless of the collection method
+used. This is mainly of benefit to the Linux kernel as normal applications
+can expand their stack and do not need to worry about stack usage as
+much. The second module shows cumulative usage in gengraph between pairs of
+functions. This is really handy for showing the usage between a system call
+and a lower-level function to identify places where stack is used too much.
+
+See the man pages for genfull and gengraph for more information on the use
+of the post-processing options.
+
+Daemon/Client Support
+---------------------
+
+With a large input graph, the longest operation for the generation of the call
+graph is the reading of the input file. To compare, to generate a small graph
+on the authors machine, it takes 4 seconds to read the input graph and 0.1
+seconds to generate the output file. To address, this, gengraph can run as a
+daemon if the -q (--daemon) switch is specified. Use -v if you want to see what
+it is doing.
+
+	gengraph -q -g /usr/src/linux-2.4.20-clean/full.graph
+
+When this returns, the daemon is running. To generate a graph using the daemon,
+run
+	gengraph -q -t -d 2 -f alloc_pages
+
+Note the use of the -q switch which says that gengraph should run as a client
+to the daemon instance. If you are bored, compare the difference in running
+times between normal gengraph and when it is used as a client :-) . To stop
+the daemon, do the following
+
+	echo QUIT > /tmp/codeviz.pipe
+
+and the daemon will shutdown and cleanup.
+
+Generating Graphs for the Web
+-----------------------------
+
+Gengraph is now suitable for use with CGI scripts. To generate GIF output 
+instead of postfix, use the -w switch. How you choose to implement is up
+to yourself but what I did was the following
+
+o Have CGI script call gengraph to output GIF to /tmp
+o In the HTML, have <img src=/cgi-bin/readgif?output.gif>
+
+Where output.gif is actually some temporary file in /tmp created by the CGI
+script with a unique name and readgif is a simply exectuable which reads
+GIFs from /tmp and then unlinks them.
+
+There is no demo of this available because the webserver which hosts this 
+project is a bit loaded. While I could run a demo, my popularity would take
+a bit of a dent.
+
+There is also support for generating HTML files with source-highlight if you
+have it installed. See the detailed manpage for the --shighlight option for
+more details.
+
+Misc Notes
+----------
+
+Reports of success or failure, especially with C++, using any of the collection
+methods are appreciated.
+
+Bugs and Feedback 
+-----------------
+Email any comments, feedback and bug reports to mel@csn.ul.ie. Enjoy.....
+
+Credits
+-------
+
+The vast majority of this has been implemented by Mel Gorman
+<mel@csn.ul.ie>.  However, the diff to gcc and original cdepn.pl that
+this project was originally based on was written by Martin Devera (Devik)
+(http://luxik.cdi.cz/~devik). They have since changed considerably to support
+other languages and be more flexible but the original idea was his, thanks
+Martin. Encouragement and prodding to support ncc is courtesy of the author
+of ncc Xanthakis Stelios (sxanth@ceid.upatras.gr). The main guts of the 
+implementation of the regular expression support and HTML rendering is
+courtesy of Robert Lehr (bozzio@the-lehrs.com).
