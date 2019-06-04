@@ -1,0 +1,225 @@
+diff -pruN gcc-7.4.0/gcc/cgraph.c gcc-graph/gcc-7.4.0/gcc/cgraph.c
+--- gcc-7.4.0/gcc/cgraph.c	2017-04-12 00:38:19.476381000 +0800
++++ gcc-graph/gcc-7.4.0/gcc/cgraph.c	2019-06-04 08:29:32.457106530 +0800
+@@ -809,7 +809,7 @@ cgraph_edge::set_call_stmt (gcall *new_s
+ cgraph_edge *
+ symbol_table::create_edge (cgraph_node *caller, cgraph_node *callee,
+ 			   gcall *call_stmt, gcov_type count, int freq,
+-			   bool indir_unknown_callee)
++			   bool indir_unknown_callee, location_t call_location)
+ {
+   cgraph_edge *edge;
+ 
+@@ -875,6 +875,7 @@ symbol_table::create_edge (cgraph_node *
+ 
+   edge->indirect_info = NULL;
+   edge->indirect_inlining_edge = 0;
++  edge->call_location = call_location;
+   edge->speculative = false;
+   edge->indirect_unknown_callee = indir_unknown_callee;
+   if (opt_for_fn (edge->caller->decl, flag_devirtualize)
+@@ -897,7 +898,7 @@ cgraph_node::create_edge (cgraph_node *c
+ 			  gcall *call_stmt, gcov_type count, int freq)
+ {
+   cgraph_edge *edge = symtab->create_edge (this, callee, call_stmt, count,
+-					   freq, false);
++					   freq, false, input_location);
+ 
+   initialize_inline_failed (edge);
+ 
+@@ -935,7 +936,7 @@ cgraph_node::create_indirect_edge (gcall
+ 				   bool compute_indirect_info)
+ {
+   cgraph_edge *edge = symtab->create_edge (this, NULL, call_stmt,
+-							    count, freq, true);
++							    count, freq, true, input_location);
+   tree target;
+ 
+   initialize_inline_failed (edge);
+diff -pruN gcc-7.4.0/gcc/cgraph.h gcc-graph/gcc-7.4.0/gcc/cgraph.h
+--- gcc-7.4.0/gcc/cgraph.h	2018-03-07 04:04:20.188219000 +0800
++++ gcc-graph/gcc-7.4.0/gcc/cgraph.h	2019-06-04 08:37:43.402180199 +0800
+@@ -1732,6 +1732,8 @@ struct GTY((chain_next ("%h.next_caller"
+   /* Return true if call must bind to current definition.  */
+   bool binds_to_current_def_p ();
+ 
++  /* CodeViz: Location the call occurred at */
++  location_t call_location;
+ private:
+   /* Remove the edge from the list of the callers of the callee.  */
+   void remove_caller (void);
+@@ -2242,7 +2244,7 @@ private:
+      edge).  */
+   cgraph_edge *create_edge (cgraph_node *caller, cgraph_node *callee,
+ 			    gcall *call_stmt, gcov_type count, int freq,
+-			    bool indir_unknown_callee);
++			    bool indir_unknown_callee, location_t call_location);
+ 
+   /* Put the edge onto the free list.  */
+   void free_edge (cgraph_edge *e);
+diff -pruN gcc-7.4.0/gcc/cgraphunit.c gcc-graph/gcc-7.4.0/gcc/cgraphunit.c
+--- gcc-7.4.0/gcc/cgraphunit.c	2018-01-12 13:32:31.212894000 +0800
++++ gcc-graph/gcc-7.4.0/gcc/cgraphunit.c	2019-06-04 15:45:14.285317801 +0800
+@@ -589,6 +589,7 @@ cgraph_node::add_new_function (tree fnde
+     DECL_FUNCTION_PERSONALITY (fndecl) = lang_hooks.eh_personality ();
+ }
+ 
++extern int cdepn_dump;
+ /* Analyze the function scheduled to be output.  */
+ void
+ cgraph_node::analyze (void)
+@@ -603,6 +604,11 @@ cgraph_node::analyze (void)
+   location_t saved_loc = input_location;
+   input_location = DECL_SOURCE_LOCATION (decl);
+ 
++  tree calleeTree;
++  FILE *fnref_f;
++  struct cgraph_edge *calleeEdge;
++  expanded_location xloc;
++
+   if (thunk.thunk_p)
+     {
+       cgraph_node *t = cgraph_node::get (thunk.alias);
+@@ -678,6 +684,37 @@ cgraph_node::analyze (void)
+   analyzed = true;
+ 
+   input_location = saved_loc;
++
++  if (cdepn_dump)
++  {
++    /* CodeViz: Output information on this node */
++    //thisTree = node->decl;
++    if ((fnref_f = cdepn_open(NULL)))
++    {
++      fprintf(fnref_f,"F {%s} {%s:%d}\n",
++              lang_hooks.decl_printable_name(decl, 2),
++              DECL_SOURCE_FILE(decl), DECL_SOURCE_LINE(decl));
++    }
++
++    /* CodeViz: Output information on all functions this node calls */
++    for (calleeEdge = callees; calleeEdge;
++            calleeEdge = calleeEdge->next_callee)
++    {
++      calleeTree = calleeEdge->callee->decl;
++      if (decl != NULL &&
++              calleeTree != NULL &&
++              (fnref_f = cdepn_open(NULL)) != NULL)
++      {
++        xloc = expand_location(calleeEdge->call_location);
++        fprintf(fnref_f, "C {%s} {%s:%d} {%s}\n",
++                lang_hooks.decl_printable_name(decl, 2),
++                xloc.file, xloc.line,
++                lang_hooks.decl_printable_name(calleeTree, 2));
++      }
++      else
++        printf("CODEVIZ: Unexpected NULL encountered\n");
++    }
++  }
+ }
+ 
+ /* C++ frontend produce same body aliases all over the place, even before PCH
+diff -pruN gcc-7.4.0/gcc/toplev.c gcc-graph/gcc-7.4.0/gcc/toplev.c
+--- gcc-7.4.0/gcc/toplev.c	2017-09-15 16:18:34.015147000 +0800
++++ gcc-graph/gcc-7.4.0/gcc/toplev.c	2019-06-04 15:48:05.834704434 +0800
+@@ -2073,6 +2073,60 @@ toplev::run_self_tests ()
+ #endif /* #if CHECKING_P */
+ }
+ 
++/*
++ * codeviz: Open the cdepn file. This is called with a filename by main()
++ * and with just NULL for every other instance to return just the handle
++ */
++FILE *g_fnref_f = NULL;
++char cdepnfile[256] = "--wonthappen--";
++int cdepn_dump = 0;
++
++FILE *cdepn_open(const char *filename)
++{
++  struct stat cdepnstat;
++  int errval;
++  time_t currtime;
++  if (filename && g_fnref_f == NULL)
++  {
++    strcpy(cdepnfile, filename);
++    strcat(cdepnfile, ".cdepn");
++
++    /*
++     * Decide whether to open write or append. There appears to be a weird
++     * bug that decides to open the file twice, overwriting all the cdepn
++     * information put there before
++     */
++    errval = stat(cdepnfile, &cdepnstat);
++    currtime = time(NULL);
++    if (errval == -1 || currtime - cdepnstat.st_mtime > 5)
++    {
++      g_fnref_f = fopen(cdepnfile, "w");
++      fprintf(stderr, "opened dep file %s\n",cdepnfile);
++    }
++    else
++    {
++      g_fnref_f = fopen(cdepnfile, "a");
++      fprintf(stderr, "append dep file %s\n", cdepnfile);
++    }
++
++    fflush(stderr);
++  }
++
++  return g_fnref_f;
++}
++
++void cdepn_close(void)
++{
++  if (g_fnref_f) fclose(g_fnref_f);
++  g_fnref_f = NULL;
++}
++
++int cdepn_checkprint(void *fncheck)
++{
++    return 1;
++    /*return (void *)fncheck == (void *)decl_name; */
++}
++
+ /* Entry point of cc1, cc1plus, jc1, f771, etc.
+    Exit code is FATAL_EXIT_CODE if can't open files or if there were
+    any errors, or SUCCESS_EXIT_CODE if compilation succeeded.
+@@ -2130,13 +2184,19 @@ toplev::main (int argc, char **argv)
+   if (help_flag)
+     print_plugins_help (stderr, "");
+ 
+-  /* Exit early if we can (e.g. -help).  */
++  /* Exit early if we can (e.g. -help). */
+   if (!exit_after_options)
+-    {
+-      if (m_use_TV_TOTAL)
+-	start_timevars ();
+-      do_compile ();
+-    }
++  {
++    if (m_use_TV_TOTAL)
++      start_timevars();
++
++    cdepn_dump = ((getenv("CDEPN_SUPPRESS")) ? 0 : 1);
++    if (cdepn_dump)
++      cdepn_open(main_input_filename);
++    do_compile ();
++    if (cdepn_dump)
++      cdepn_close();
++  }
+ 
+   if (warningcount || errorcount || werrorcount)
+     print_ignored_options ();
+diff -pruN gcc-7.4.0/gcc/tree.h gcc-graph/gcc-7.4.0/gcc/tree.h
+--- gcc-7.4.0/gcc/tree.h	2017-11-30 06:13:34.210836000 +0800
++++ gcc-graph/gcc-7.4.0/gcc/tree.h	2019-06-04 15:48:22.778051253 +0800
+@@ -5500,4 +5500,11 @@ desired_pro_or_demotion_p (const_tree to
+   return to_type_precision <= TYPE_PRECISION (from_type);
+ }
+ 
++/*
++ * CodeViz functions to get the output file handle for cdepn files
++ */
++FILE *cdepn_open(const char *filename);
++void cdepn_close(void);
++int cdepn_checkprint(void *fncheck);
++
+ #endif  /* GCC_TREE_H  */

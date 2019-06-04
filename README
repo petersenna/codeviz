@@ -75,20 +75,20 @@ some scripts are available in the compilers/ directory.
 The patched version of gcc and g++ outputs .cdepn files for every c and c++
 file compiled. This .cdepn file contains information such as when functions
 are called, where they are declared and so on. Earlier versions of CodeViz
-supported multiple gcc versions but this one only support 4.6.2.
+supported multiple gcc versions but this one only support 7.4.0.
 
 First, the source tar has to be downloaded.  For those who have better things
 to do than read the gcc install doc, just do the following
 
 cd compilers
-ncftpget ftp://ftp.gnu.org/pub/gnu/gcc/gcc-4.6.2/gcc-4.6.2.tar.gz
-./install_gcc-4.6.2.sh <optional install path>
+ncftpget ftp://ftp.gnu.org/pub/gnu/gcc/gcc-7.4.0/gcc-7.4.0.tar.gz
+./install_gcc-7.4.0.sh <optional install path>
 
 This script will untar gcc, patch it and install it to the supplied path. If
 no path is given, it'll be installed to $HOME/gcc-graph . I usually install
 it to /usr/local/gcc-graph with
 
-./install_gcc-4.6.2.sh /usr/local/gcc-graph
+./install_gcc-7.4.0.sh /usr/local/gcc-graph
 
 If you seriously want to patch by hand, just read the script as it goes through
 each of the steps one at a time. There is one step to note though.
